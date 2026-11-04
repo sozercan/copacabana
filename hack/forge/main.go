@@ -18,8 +18,8 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
-	"github.com/sozercan/copa-controller/internal/attest"
-	"github.com/sozercan/copa-controller/internal/registry"
+	"github.com/sozercan/copacabana/internal/attest"
+	"github.com/sozercan/copacabana/internal/registry"
 )
 
 func main() {

@@ -11,9 +11,9 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
-	"github.com/sozercan/copa-controller/internal/attest"
-	"github.com/sozercan/copa-controller/internal/registry"
+	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/attest"
+	"github.com/sozercan/copacabana/internal/registry"
 )
 
 // Catalog finds verified patches in the patched repository.

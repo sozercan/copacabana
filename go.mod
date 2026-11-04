@@ -1,4 +1,4 @@
-module github.com/sozercan/copa-controller
+module github.com/sozercan/copacabana
 
 go 1.27.3
 

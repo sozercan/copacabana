@@ -8,7 +8,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
 
-	"github.com/sozercan/copa-controller/internal/trivy"
+	"github.com/sozercan/copacabana/internal/trivy"
 )
 
 func report(vulns ...trivy.Vulnerability) *trivy.Report {

@@ -17,10 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
-	"github.com/sozercan/copa-controller/internal/attest"
-	"github.com/sozercan/copa-controller/internal/controller"
-	"github.com/sozercan/copa-controller/internal/registry"
+	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/attest"
+	"github.com/sozercan/copacabana/internal/controller"
+	"github.com/sozercan/copacabana/internal/registry"
 )
 
 func main() {

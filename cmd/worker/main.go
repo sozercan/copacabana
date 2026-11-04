@@ -13,10 +13,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sozercan/copa-controller/internal/attest"
-	"github.com/sozercan/copa-controller/internal/registry"
-	"github.com/sozercan/copa-controller/internal/trivy"
-	"github.com/sozercan/copa-controller/internal/worker"
+	"github.com/sozercan/copacabana/internal/attest"
+	"github.com/sozercan/copacabana/internal/registry"
+	"github.com/sozercan/copacabana/internal/trivy"
+	"github.com/sozercan/copacabana/internal/worker"
 )
 
 func usage() {

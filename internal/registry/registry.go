@@ -21,7 +21,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
+	"github.com/sozercan/copacabana/api/v1alpha1"
 )
 
 // Media and artifact types used for the artifacts this project writes.

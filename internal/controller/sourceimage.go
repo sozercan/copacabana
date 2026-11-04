@@ -20,8 +20,8 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
-	"github.com/sozercan/copa-controller/internal/imageref"
+	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/imageref"
 )
 
 // AnnotationRebuild on a SourceImage asks for an immediate rescan and rebuild.

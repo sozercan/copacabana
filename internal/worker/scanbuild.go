@@ -12,8 +12,8 @@ import (
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 
-	"github.com/sozercan/copa-controller/internal/registry"
-	"github.com/sozercan/copa-controller/internal/trivy"
+	"github.com/sozercan/copacabana/internal/registry"
+	"github.com/sozercan/copacabana/internal/trivy"
 )
 
 // Scan scans image and, if reportRepo is set, pushes the report there as an artifact.

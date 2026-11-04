@@ -16,10 +16,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
-	"github.com/sozercan/copa-controller/internal/attest"
-	"github.com/sozercan/copa-controller/internal/registry"
-	"github.com/sozercan/copa-controller/internal/trivy"
+	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/attest"
+	"github.com/sozercan/copacabana/internal/registry"
+	"github.com/sozercan/copacabana/internal/trivy"
 )
 
 // Version is the worker version recorded in attestations.

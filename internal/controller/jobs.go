@@ -9,9 +9,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
-	"github.com/sozercan/copa-controller/internal/imageref"
-	"github.com/sozercan/copa-controller/internal/worker"
+	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/imageref"
+	"github.com/sozercan/copacabana/internal/worker"
 )
 
 // Service accounts and objects the Jobs use. Each step has its own identity.

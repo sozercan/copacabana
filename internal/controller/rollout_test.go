@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
+	"github.com/sozercan/copacabana/api/v1alpha1"
 )
 
 const candidateDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"

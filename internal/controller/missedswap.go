@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
+	"github.com/sozercan/copacabana/api/v1alpha1"
 )
 
 // MissedSwapReconciler flags opted-in pods that ask for a swappable image but weren't swapped.

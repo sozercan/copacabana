@@ -3,7 +3,7 @@
 package worker
 
 import (
-	"github.com/sozercan/copa-controller/api/v1alpha1"
+	"github.com/sozercan/copacabana/api/v1alpha1"
 )
 
 // TerminationLog is where Kubernetes reads a container's termination message.

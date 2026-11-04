@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sozercan/copa-controller/internal/imageref"
+	"github.com/sozercan/copacabana/internal/imageref"
 )
 
 // Modes the controller runs in.

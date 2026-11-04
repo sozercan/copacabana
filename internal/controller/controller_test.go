@@ -8,7 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	"github.com/sozercan/copa-controller/api/v1alpha1"
+	"github.com/sozercan/copacabana/api/v1alpha1"
 )
 
 const src = "index.docker.io/library/nginx:1.25.3"
