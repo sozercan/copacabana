@@ -1,4 +1,4 @@
-# copa-controller
+# copacabana
 
 Prototype of in-cluster Copa OS patching: find the images opted-in workloads run, scan and patch them with
 [Copa](https://github.com/project-copacetic/copacetic) in isolated Jobs, verify and sign the result, and roll
@@ -11,17 +11,50 @@ Diagram: [docs/how-it-works.html](docs/how-it-works.html) (uses host theme varia
 
 ## How it works
 
+```mermaid
+flowchart TB
+  dep["Deployment in a team namespace<br/>image: nginx:1.25.3-alpine (unchanged in Git)<br/>label copa.sh/rollout=enabled"]
+
+  subgraph build["Build a verified patch · once per source digest"]
+    direction LR
+    inv["1 · Inventory<br/>tag → digest<br/>SourceImage"] --> scan["2 · Scan Job<br/>Trivy<br/><i>copa-builder</i>"]
+    scan --> bld["3 · Build Job<br/>Copa + rootless BuildKit<br/><i>copa-builder</i>"]
+    bld --> ver["4 · Verify Job<br/>layers · config · re-scan vs VEX<br/>signs attestation<br/><i>copa-verifier</i>"]
+    ver --> pat[("5 · patched/*<br/>index + attestation")]
+  end
+
+  subgraph roll["Roll it out · per namespace"]
+    direction LR
+    cat["6 · Catalog<br/>verifies signature,<br/>subject, platforms"] --> pr["7 · PatchRollout<br/>approval: label or<br/>PatchApproval"]
+    pr --> sw["8 · SwapList<br/>source → patched@sha256<br/><i>guarded by VAP</i>"]
+    sw --> rs["9 · Restart<br/>dry run, then<br/>restartedAt bump"]
+    rs --> map{{"10 · MutatingAdmissionPolicy<br/>swaps image at pod create"}}
+    map --> pods["11 · Pods on patched digest<br/>imageID · health · soak"]
+  end
+
+  dep --> build
+  build --> roll
 ```
-Deployment (Git: nginx:1.25.3-alpine, label copa.sh/rollout=enabled)
-  -> inventory resolves the tag            -> SourceImage (one per digest)
-  -> scan Job (Trivy client -> Trivy server) -> report artifact in staging/reports
-  -> build Job (Copa + rootless BuildKit sidecar, one per platform) -> staging/*
-  -> verify Job (layer check, config check, re-scan vs. VEX claims, index of patched platforms only,
-                 DSSE-signed in-toto attestation) -> patched/*
-  -> catalog verifies the attestation      -> PatchRollout per namespace
-  -> approval (namespace label or PatchApproval) -> SwapList updated -> admission dry run
-  -> bounded rolling restarts -> image check (spec and runtime imageID) -> healthy-for -> soak -> Succeeded
-  -> on failure or team request: restore previous patch or pinned source -> restart -> RolledBack / RecoveryFailed
+
+A `PatchRollout` moves through these phases. A team can back out at any point, including after `Succeeded`, by
+annotating a Deployment with `copa.sh/fail-rollout`.
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  [*] --> AwaitingApproval
+  AwaitingApproval --> Selecting: approved
+  Selecting --> Restarting: SwapList updated,<br/>dry run swapped
+  Restarting --> Soaking: all workloads healthy
+  Soaking --> Succeeded: soak elapsed
+  Restarting --> RollingBack: deadline, crash, wrong image
+  Soaking --> RollingBack: unhealthy
+  Succeeded --> RollingBack: team back-out
+  RollingBack --> RolledBack: previous patch or<br/>pinned source running
+  RollingBack --> RecoveryFailed
+  AwaitingApproval --> RolledBack: cancelled
+  RolledBack --> [*]
+  Succeeded --> [*]
 ```
 
 | Resource | Scope | Written by | Purpose |
