@@ -1,0 +1,51 @@
+# Only the controller (and a named admin group) may write SwapLists. Every swap must belong to an entry and
+# point at that entry's selected patch (a digest-pinned image under the patched prefix) or its pinned fallback.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: copa-swaplist-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["rollout.copa.sh"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["swaplists"]
+  variables:
+  - name: patchedPrefix
+    expression: "'kind-registry:5000/patched/'"
+  # A digest-pinned reference under the patched prefix, with a well-formed repository path (no "..", no tags).
+  - name: patchedRef
+    expression: >-
+      '^' + variables.patchedPrefix.replace('.', '\\.') +
+      '[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*@sha256:[a-f0-9]{64}$'
+  - name: images
+    expression: "has(object.spec.images) ? object.spec.images : {}"
+  - name: entries
+    expression: "has(object.spec.entries) ? object.spec.entries : []"
+  validations:
+  - expression: >-
+      request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller" ||
+      "copa:platform-admins" in request.userInfo.groups
+    message: "only the copa controller or copa:platform-admins may write swap lists"
+  - expression: >-
+      variables.entries.all(e,
+        e.sourceDigest.matches('^sha256:[a-f0-9]{64}$') &&
+        e.fallback.endsWith('@' + e.sourceDigest) &&
+        (!has(e.selected) || e.selected.ref.matches(variables.patchedRef)) &&
+        (!has(e.previous) || e.previous.ref.matches(variables.patchedRef)))
+    message: "selected and previous patches must be digest-pinned images under the patched prefix, and the fallback must pin the source digest"
+  - expression: >-
+      variables.images.all(k, variables.entries.exists(e,
+        (k == e.source || (has(e.aliases) && k in e.aliases)) &&
+        variables.images[k] == (has(e.selected) ? e.selected.ref : e.fallback)))
+    message: "every swap must be an alias of an entry and point at that entry's selected patch or its pinned fallback"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: copa-swaplist-guard
+spec:
+  policyName: copa-swaplist-guard
+  validationActions: [Deny]

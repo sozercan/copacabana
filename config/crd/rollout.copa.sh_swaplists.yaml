@@ -1,0 +1,185 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: swaplists.rollout.copa.sh
+spec:
+  group: rollout.copa.sh
+  names:
+    kind: SwapList
+    listKind: SwapListList
+    plural: swaplists
+    shortNames:
+    - swap
+    singular: swaplist
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: SwapList records which patched image admission applies for each
+          source image in a namespace.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SwapListSpec is read by admission. Only the controller writes
+              it.
+            properties:
+              entries:
+                description: Entries explain Images and keep rollback state.
+                items:
+                  description: SwapEntry records the patch selection for one source
+                    reference in a namespace.
+                  properties:
+                    aliases:
+                      description: Aliases are every image string that means Source.
+                        Each one is a key in spec.images.
+                      items:
+                        type: string
+                      type: array
+                    fallback:
+                      description: Fallback is the source pinned by digest. Recovery
+                        from a first patch restores this.
+                      type: string
+                    previous:
+                      description: Previous is the patch that was selected before
+                        Selected.
+                      properties:
+                        digest:
+                          description: Digest of the patched index.
+                          type: string
+                        platforms:
+                          description: Platforms that were patched. Every platform
+                            in the index was patched.
+                          items:
+                            description: PlatformPatch records what one platform of
+                              a patch was built from.
+                            properties:
+                              patchedDigest:
+                                type: string
+                              platform:
+                                type: string
+                              remainingFixable:
+                                description: RemainingFixable is how many fixable
+                                  vulnerabilities the post-patch scan still found.
+                                type: integer
+                              sourceDigest:
+                                type: string
+                            required:
+                            - patchedDigest
+                            - platform
+                            - sourceDigest
+                            type: object
+                          type: array
+                        ref:
+                          description: Ref is the pinned reference, repo@digest. Admission
+                            applies this.
+                          type: string
+                        revision:
+                          description: Revision number of this patch for its source
+                            tag.
+                          type: integer
+                        tag:
+                          description: Tag is the readable tag, such as 1.25.3-alpine-2.
+                          type: string
+                      required:
+                      - digest
+                      - ref
+                      type: object
+                    rollout:
+                      description: Rollout is the PatchRollout currently changing
+                        this entry.
+                      type: string
+                    selected:
+                      description: Selected is the patch admission applies now. Nil
+                        means the fallback is selected.
+                      properties:
+                        digest:
+                          description: Digest of the patched index.
+                          type: string
+                        platforms:
+                          description: Platforms that were patched. Every platform
+                            in the index was patched.
+                          items:
+                            description: PlatformPatch records what one platform of
+                              a patch was built from.
+                            properties:
+                              patchedDigest:
+                                type: string
+                              platform:
+                                type: string
+                              remainingFixable:
+                                description: RemainingFixable is how many fixable
+                                  vulnerabilities the post-patch scan still found.
+                                type: integer
+                              sourceDigest:
+                                type: string
+                            required:
+                            - patchedDigest
+                            - platform
+                            - sourceDigest
+                            type: object
+                          type: array
+                        ref:
+                          description: Ref is the pinned reference, repo@digest. Admission
+                            applies this.
+                          type: string
+                        revision:
+                          description: Revision number of this patch for its source
+                            tag.
+                          type: integer
+                        tag:
+                          description: Tag is the readable tag, such as 1.25.3-alpine-2.
+                          type: string
+                      required:
+                      - digest
+                      - ref
+                      type: object
+                    source:
+                      description: Source is the canonical source reference, such
+                        as index.docker.io/library/nginx:1.25.3.
+                      type: string
+                    sourceDigest:
+                      description: SourceDigest is the source digest the selected
+                        patch was built from.
+                      type: string
+                  required:
+                  - aliases
+                  - fallback
+                  - source
+                  - sourceDigest
+                  type: object
+                type: array
+              images:
+                additionalProperties:
+                  type: string
+                description: Images maps each requested image string to the image
+                  to run. Admission reads only this field.
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

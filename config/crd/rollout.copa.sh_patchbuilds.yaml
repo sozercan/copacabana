@@ -1,0 +1,251 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: patchbuilds.rollout.copa.sh
+spec:
+  group: rollout.copa.sh
+  names:
+    kind: PatchBuild
+    listKind: PatchBuildList
+    plural: patchbuilds
+    shortNames:
+    - pbuild
+    singular: patchbuild
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.reference
+      name: Source
+      type: string
+    - jsonPath: .spec.reason
+      name: Reason
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.promoted.tag
+      name: Patch
+      type: string
+    - jsonPath: .status.message
+      name: Message
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: PatchBuild is one attempt to scan, patch, verify and promote
+          a source digest.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PatchBuildSpec describes one attempt to scan and patch a
+              source digest.
+            properties:
+              baseline:
+                description: Baseline is the current patch. If set, the build first
+                  rescans it, and only patches if it has new fixes.
+                properties:
+                  digest:
+                    description: Digest of the patched index.
+                    type: string
+                  platforms:
+                    description: Platforms that were patched. Every platform in the
+                      index was patched.
+                    items:
+                      description: PlatformPatch records what one platform of a patch
+                        was built from.
+                      properties:
+                        patchedDigest:
+                          type: string
+                        platform:
+                          type: string
+                        remainingFixable:
+                          description: RemainingFixable is how many fixable vulnerabilities
+                            the post-patch scan still found.
+                          type: integer
+                        sourceDigest:
+                          type: string
+                      required:
+                      - patchedDigest
+                      - platform
+                      - sourceDigest
+                      type: object
+                    type: array
+                  ref:
+                    description: Ref is the pinned reference, repo@digest. Admission
+                      applies this.
+                    type: string
+                  revision:
+                    description: Revision number of this patch for its source tag.
+                    type: integer
+                  tag:
+                    description: Tag is the readable tag, such as 1.25.3-alpine-2.
+                    type: string
+                required:
+                - digest
+                - ref
+                type: object
+              platforms:
+                description: Platforms to patch, with their source manifest digests.
+                items:
+                  description: PlatformDigest pairs a platform with an image manifest
+                    digest.
+                  properties:
+                    digest:
+                      description: Digest of the platform-specific image manifest.
+                      type: string
+                    platform:
+                      description: Platform such as linux/amd64.
+                      type: string
+                  required:
+                  - digest
+                  - platform
+                  type: object
+                type: array
+              reason:
+                description: 'Reason the build was started: NewSource, Rescan or Manual.'
+                type: string
+              reference:
+                description: Reference is the tag reference used to name the patched
+                  image.
+                type: string
+              repository:
+                description: Repository of the source, canonical.
+                type: string
+              scanOnly:
+                description: ScanOnly stops after scanning the source. Used in report-only
+                  mode.
+                type: boolean
+              sourceDigest:
+                description: SourceDigest of the source index or manifest.
+                type: string
+              sourceImage:
+                description: SourceImage is the name of the SourceImage this build
+                  is for.
+                type: string
+            required:
+            - platforms
+            - reference
+            - repository
+            - sourceDigest
+            - sourceImage
+            type: object
+          status:
+            description: PatchBuildStatus is the observed state of a PatchBuild.
+            properties:
+              completionTime:
+                format: date-time
+                type: string
+              failedStage:
+                description: 'FailedStage is the stage that failed: scan, build or
+                  verify.'
+                type: string
+              message:
+                type: string
+              phase:
+                description: BuildPhase is the phase of a PatchBuild.
+                type: string
+              platforms:
+                items:
+                  description: PlatformBuild tracks one platform of a build.
+                  properties:
+                    baselineFixable:
+                      description: BaselineFixable is the fixable count in the baseline
+                        patch, if one was scanned.
+                      type: integer
+                    fixable:
+                      description: Fixable is the number of fixable OS vulnerabilities
+                        in the source.
+                      type: integer
+                    platform:
+                      type: string
+                    reportRef:
+                      description: ReportRef is the pinned reference of the source
+                        scan report artifact.
+                      type: string
+                    sourceDigest:
+                      type: string
+                    stagedRef:
+                      description: StagedRef is the pinned reference of the staged
+                        patched image.
+                      type: string
+                    vexRef:
+                      description: VEXRef is the pinned reference of the VEX artifact
+                        for the staged image.
+                      type: string
+                  required:
+                  - platform
+                  - sourceDigest
+                  type: object
+                type: array
+              promoted:
+                description: PatchRef identifies a promoted, verified patch.
+                properties:
+                  digest:
+                    description: Digest of the patched index.
+                    type: string
+                  platforms:
+                    description: Platforms that were patched. Every platform in the
+                      index was patched.
+                    items:
+                      description: PlatformPatch records what one platform of a patch
+                        was built from.
+                      properties:
+                        patchedDigest:
+                          type: string
+                        platform:
+                          type: string
+                        remainingFixable:
+                          description: RemainingFixable is how many fixable vulnerabilities
+                            the post-patch scan still found.
+                          type: integer
+                        sourceDigest:
+                          type: string
+                      required:
+                      - patchedDigest
+                      - platform
+                      - sourceDigest
+                      type: object
+                    type: array
+                  ref:
+                    description: Ref is the pinned reference, repo@digest. Admission
+                      applies this.
+                    type: string
+                  revision:
+                    description: Revision number of this patch for its source tag.
+                    type: integer
+                  tag:
+                    description: Tag is the readable tag, such as 1.25.3-alpine-2.
+                    type: string
+                required:
+                - digest
+                - ref
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

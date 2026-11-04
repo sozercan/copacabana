@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: copa-rollout-controller
+  namespace: copa-system
+---
+# Prototype simplification: cluster-wide. The design binds the Deployment and pod permissions per opted-in
+# namespace instead. Note that "pods create" is needed for the server-side dry run, and RBAC can't limit it to dry runs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: copa-rollout-controller
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["events.k8s.io"]
+  resources: ["events"]
+  verbs: ["create", "patch", "update"]
+- apiGroups: ["rollout.copa.sh"]
+  resources: ["sourceimages", "patchbuilds", "patchrollouts", "swaplists"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["rollout.copa.sh"]
+  resources: ["sourceimages/status", "patchbuilds/status", "patchrollouts/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["rollout.copa.sh"]
+  resources: ["patchapprovals"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: copa-rollout-controller
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: copa-rollout-controller}
+subjects:
+- {kind: ServiceAccount, name: copa-rollout-controller, namespace: copa-system}
+---
+# Creating Jobs is limited to the builder and verifier namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: copa-job-runner
+  namespace: copa-builder
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: copa-job-runner
+  namespace: copa-builder
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: copa-job-runner}
+subjects:
+- {kind: ServiceAccount, name: copa-rollout-controller, namespace: copa-system}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: copa-job-runner
+  namespace: copa-verifier
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: copa-job-runner
+  namespace: copa-verifier
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: copa-job-runner}
+subjects:
+- {kind: ServiceAccount, name: copa-rollout-controller, namespace: copa-system}
+---
+# Bind this per namespace to the people who approve patches for that rollout group.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: copa-approver
+rules:
+- apiGroups: ["rollout.copa.sh"]
+  resources: ["patchapprovals"]
+  verbs: ["get", "list", "create"]
+- apiGroups: ["rollout.copa.sh"]
+  resources: ["patchrollouts", "swaplists"]
+  verbs: ["get", "list", "watch"]

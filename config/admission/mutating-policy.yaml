@@ -1,0 +1,74 @@
+# Swaps source images for approved patched images when an opted-in pod is created.
+# The param is the pod namespace's SwapList named "copa". No SwapList means nothing to swap.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicy
+metadata:
+  name: copa-image-swap
+spec:
+  paramKind:
+    apiVersion: rollout.copa.sh/v1alpha1
+    kind: SwapList
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods"]
+  failurePolicy: Ignore
+  reinvocationPolicy: IfNeeded
+  variables:
+  - name: swaps
+    expression: "has(params.spec.images) ? params.spec.images : {}"
+  # Containers this policy already swapped, recorded as name=original-image. Reinvocation must not swap them
+  # again: a swap target can be another entry's key (a recovered tag points at the pinned source digest,
+  # which can itself have a patch selected), and swapping twice would undo the recovery.
+  - name: prior
+    expression: >-
+      has(object.metadata.annotations) && 'copa.sh/swapped' in object.metadata.annotations
+        ? object.metadata.annotations['copa.sh/swapped'] : ''
+  - name: done
+    expression: "variables.prior == '' ? [] : variables.prior.split(',').map(s, s.split('=')[0])"
+  - name: containers
+    expression: "object.spec.containers.filter(c, c.image in variables.swaps && !(c.name in variables.done))"
+  - name: initContainers
+    expression: >-
+      has(object.spec.initContainers)
+        ? object.spec.initContainers.filter(c, c.image in variables.swaps && !(c.name in variables.done))
+        : []
+  mutations:
+  - patchType: ApplyConfiguration
+    applyConfiguration:
+      expression: >-
+        variables.containers.size() + variables.initContainers.size() == 0 ? Object{} :
+        Object{
+          metadata: Object.metadata{
+            annotations: {
+              "copa.sh/swapped": ((variables.prior == '' ? [] : [variables.prior]) +
+                  (variables.initContainers + variables.containers).map(c, c.name + "=" + c.image)).join(","),
+              "copa.sh/swaplist-generation": string(params.metadata.generation)
+            }
+          },
+          spec: Object.spec{
+            ?containers: variables.containers.size() == 0 ? optional.none() :
+              optional.of(variables.containers.map(c,
+                Object.spec.containers{name: c.name, image: variables.swaps[c.image]})),
+            ?initContainers: variables.initContainers.size() == 0 ? optional.none() :
+              optional.of(variables.initContainers.map(c,
+                Object.spec.initContainers{name: c.name, image: variables.swaps[c.image]}))
+          }
+        }
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingAdmissionPolicyBinding
+metadata:
+  name: copa-image-swap
+spec:
+  policyName: copa-image-swap
+  paramRef:
+    name: copa
+    parameterNotFoundAction: Allow
+  matchResources:
+    namespaceSelector:
+      matchLabels: {copa.sh/patching: enabled}
+    objectSelector:
+      matchLabels: {copa.sh/rollout: enabled}

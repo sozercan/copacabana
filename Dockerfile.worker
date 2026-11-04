@@ -1,0 +1,7 @@
+FROM aquasec/trivy:0.76.1 AS trivy
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+COPY copa copa-worker /usr/local/bin/
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/copa-worker"]
