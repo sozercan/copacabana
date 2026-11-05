@@ -1,0 +1,94 @@
+# Narrows what the controller's cluster-wide RBAC can be used for: it may only touch opted-in namespaces,
+# create pods only as dry runs, and change only the restart annotation in Deployment pod templates.
+# A compromised or buggy controller can't edit workloads elsewhere or change what they run.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: copa-controller-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods"]
+    - apiGroups: ["rollout.copa.sh"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["swaplists"]
+  matchConditions:
+  - name: is-controller
+    expression: request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller"
+  validations:
+  - expression: >-
+      namespaceObject.metadata.?labels.orValue({})[?'copa.sh/patching'].orValue('') == 'enabled'
+    message: "the copa controller may only act in namespaces labelled copa.sh/patching=enabled"
+  - expression: "request.resource.resource != 'pods' || request.dryRun == true"
+    message: "the copa controller may only create pods as a dry run"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: copa-controller-scope
+spec:
+  policyName: copa-controller-scope
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: copa-controller-deployments
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE", "DELETE"]
+      resources: ["deployments"]
+  matchConditions:
+  - name: is-controller
+    expression: request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller"
+  # The controller's only Deployment write is the restart annotation that kubectl rollout restart also uses.
+  variables:
+  - name: restartKey
+    expression: "'kubectl.kubernetes.io/restartedAt'"
+  - name: oldAnnotations
+    expression: "oldObject.spec.template.metadata.?annotations.orValue({})"
+  - name: newAnnotations
+    expression: "object.spec.template.metadata.?annotations.orValue({})"
+  validations:
+  - expression: >-
+      namespaceObject.metadata.?labels.orValue({})[?'copa.sh/patching'].orValue('') == 'enabled'
+    message: "the copa controller may only act in namespaces labelled copa.sh/patching=enabled"
+  # Every user-settable field except that annotation must stay the same. Server-managed metadata
+  # (resourceVersion, generation, managedFields) is left out.
+  - expression: >-
+      request.operation == 'UPDATE' &&
+        object.metadata.?labels == oldObject.metadata.?labels &&
+        object.metadata.?annotations == oldObject.metadata.?annotations &&
+        object.metadata.?ownerReferences == oldObject.metadata.?ownerReferences &&
+        object.metadata.?finalizers == oldObject.metadata.?finalizers &&
+        object.spec.?replicas == oldObject.spec.?replicas &&
+        object.spec.selector == oldObject.spec.selector &&
+        object.spec.?strategy == oldObject.spec.?strategy &&
+        object.spec.?minReadySeconds == oldObject.spec.?minReadySeconds &&
+        object.spec.?revisionHistoryLimit == oldObject.spec.?revisionHistoryLimit &&
+        object.spec.?paused == oldObject.spec.?paused &&
+        object.spec.?progressDeadlineSeconds == oldObject.spec.?progressDeadlineSeconds &&
+        object.spec.template.spec == oldObject.spec.template.spec &&
+        object.spec.template.metadata.?labels == oldObject.spec.template.metadata.?labels &&
+        object.spec.template.metadata.?finalizers == oldObject.spec.template.metadata.?finalizers &&
+        variables.newAnnotations.all(k, k == variables.restartKey ||
+          (k in variables.oldAnnotations && variables.oldAnnotations[k] == variables.newAnnotations[k])) &&
+        variables.oldAnnotations.all(k, k == variables.restartKey || k in variables.newAnnotations)
+    message: "the copa controller may only set the kubectl.kubernetes.io/restartedAt pod-template annotation on Deployments"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: copa-controller-deployments
+spec:
+  policyName: copa-controller-deployments
+  validationActions: [Deny]

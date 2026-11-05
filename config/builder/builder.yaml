@@ -1,0 +1,97 @@
+# One identity per step. None of them get Kubernetes API access; in AKS each would map to a workload
+# identity with only the registry rights its step needs (scan: push reports, build: push staging/*,
+# verify: push patched/* and sign).
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: copa-scan, namespace: copa-builder}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: copa-build, namespace: copa-builder}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: copa-verify, namespace: copa-verifier}
+automountServiceAccountToken: false
+---
+# Trivy runs as a server so the vulnerability database is downloaded once, not by every Job.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: trivy-server, namespace: copa-builder, labels: {app: trivy-server}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: trivy-server}}
+  template:
+    metadata: {labels: {app: trivy-server}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, fsGroup: 65532, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: trivy
+        image: aquasec/trivy:0.76.1
+        args: [server, --listen, "0.0.0.0:4954", --cache-dir, /cache]
+        ports: [{containerPort: 4954, name: http}]
+        readinessProbe:
+          httpGet: {path: /healthz, port: 4954}
+          periodSeconds: 5
+          failureThreshold: 60
+        securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+        resources:
+          requests: {cpu: 100m, memory: 256Mi}
+          limits: {memory: 1Gi}
+        volumeMounts: [{name: cache, mountPath: /cache}]
+      volumes: [{name: cache, emptyDir: {}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: trivy-server, namespace: copa-builder}
+spec:
+  selector: {app: trivy-server}
+  ports: [{port: 4954, targetPort: 4954, name: http}]
+---
+# Job pods accept no inbound traffic and can reach DNS, the Trivy server, and addresses outside the cluster's
+# pod and service ranges (registries, package mirrors). They can't reach workloads.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: copa-jobs, namespace: copa-builder}
+spec:
+  podSelector:
+    matchExpressions: [{key: copa.sh/stage, operator: Exists}]
+  policyTypes: [Ingress, Egress]
+  egress:
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+  - to: [{podSelector: {matchLabels: {app: trivy-server}}}]
+    ports: [{port: 4954}]
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-registry}}, podSelector: {matchLabels: {app: registry}}}]
+    ports: [{port: 5000}]
+  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12, NODE_CIDRS]}}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: trivy-server, namespace: copa-builder}
+spec:
+  podSelector: {matchLabels: {app: trivy-server}}
+  policyTypes: [Ingress]
+  ingress:
+  - from:
+    - podSelector: {matchExpressions: [{key: copa.sh/stage, operator: Exists}]}
+    - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-verifier}}
+    ports: [{port: 4954}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: copa-jobs, namespace: copa-verifier}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  egress:
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}, podSelector: {matchLabels: {k8s-app: kube-dns}}}]
+    ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-builder}}, podSelector: {matchLabels: {app: trivy-server}}}]
+    ports: [{port: 4954}]
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-registry}}, podSelector: {matchLabels: {app: registry}}}]
+    ports: [{port: 5000}]
+  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12, NODE_CIDRS]}}]

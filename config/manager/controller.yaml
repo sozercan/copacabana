@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: copa-rollout-controller
+  namespace: copa-system
+  labels: {app: copa-rollout-controller}
+spec:
+  replicas: REPLICAS
+  selector:
+    matchLabels: {app: copa-rollout-controller}
+  template:
+    metadata:
+      labels: {app: copa-rollout-controller}
+    spec:
+      serviceAccountName: copa-rollout-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+      - name: controller
+        image: CONTROLLER_IMAGE
+        args:
+        - --mode=MODE
+        - --platforms=PLATFORMS
+        - --allow-emulation=ALLOW_EMULATION
+        - --insecure-registries=INSECURE_REGISTRIES
+        - --patched-prefix=REGISTRY_HOST/patched
+        - --staging-prefix=REGISTRY_HOST/staging
+        - --worker-image=WORKER_IMAGE
+        - --buildkit-image=moby/buildkit:v0.33.0-rootless
+        - --trivy-server=http://trivy-server.copa-builder:4954
+        - --attestation-public-key=/keys/signing.pub
+        # Short timings for the demo. Production would use hours, not minutes.
+        - --resolve-interval=30s
+        - --rescan-interval=1h
+        - --rollout-deadline=5m
+        - --healthy-for=30s
+        - --soak=2m
+        - --max-concurrent-restarts=2
+        env:
+        # Credentials for private source registries (optional Secret copa-registry-credentials, see SOURCE_AUTH).
+        - {name: DOCKER_CONFIG, value: /docker}
+        # System roots plus the in-cluster registry's CA.
+        - {name: SSL_CERT_FILE, value: /etc/copa-ca/ca-bundle.crt}
+        ports:
+        - {name: metrics, containerPort: 8080}
+        readinessProbe:
+          httpGet: {path: /readyz, port: 8081}
+        livenessProbe:
+          httpGet: {path: /healthz, port: 8081}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {memory: 256Mi}
+        volumeMounts:
+        - {name: pubkey, mountPath: /keys, readOnly: true}
+        - {name: registry-auth, mountPath: /docker, readOnly: true}
+        - {name: ca-bundle, mountPath: /etc/copa-ca, readOnly: true}
+      volumes:
+      - name: ca-bundle
+        configMap: {name: copa-ca-bundle}
+      - name: registry-auth
+        secret:
+          secretName: copa-registry-credentials
+          optional: true
+          items: [{key: .dockerconfigjson, path: config.json}]
+      - name: pubkey
+        secret: {secretName: copa-attestation-pubkey}

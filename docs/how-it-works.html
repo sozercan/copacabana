@@ -1,0 +1,92 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+:root{--team:var(--chart-1);--ctrl:var(--chart-2);--build:var(--chart-3);--verify:var(--chart-4);--api:var(--chart-5);--reg:var(--chart-6)}
+body{margin:0;font-size:13px;line-height:1.45}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 16px;font-size:11.5px;color:var(--muted-foreground)}
+.legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--c);margin-right:5px}
+.stage{margin:0 0 20px}
+.stage h2{font-size:13.5px;margin:0 0 9px;font-weight:600}
+.stage h2 small{font-weight:400;color:var(--muted-foreground);font-size:12px;margin-left:6px}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px 26px}
+.grid.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.card{position:relative;background:var(--card);border:1px solid var(--border);border-left:3px solid var(--c);border-radius:var(--radius);padding:8px 10px 9px}
+.card::after{content:"\2192";position:absolute;right:-20px;top:50%;transform:translateY(-50%);color:var(--muted-foreground);font-size:16px}
+.grid:not(.four) .card:nth-child(3n)::after,.card:last-child::after{content:none}
+.where{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--c)}
+.t{font-weight:600;margin:1px 0 3px}
+.n{display:inline-block;min-width:17px;height:17px;border-radius:9px;background:var(--c);color:var(--background);font-size:10.5px;text-align:center;line-height:17px;margin-right:5px;font-weight:700}
+.card p{margin:0;color:var(--muted-foreground);font-size:11.5px}
+code{font-family:var(--font-mono);font-size:10.5px;background:var(--code-background);padding:0 3px;border-radius:3px;color:var(--foreground);word-break:break-all}
+.rails{border-top:1px solid var(--border);padding-top:10px;font-size:11.5px;color:var(--muted-foreground)}
+.rails b{color:var(--foreground);font-weight:600}
+.rails ul{margin:4px 0 0;padding-left:16px}
+.rails li{margin:2px 0}
+</style></head><body>
+
+<div class="legend">
+  <span style="--c:var(--team)">team namespace</span>
+  <span style="--c:var(--ctrl)">controller (copa-system)</span>
+  <span style="--c:var(--build)">copa-builder Jobs</span>
+  <span style="--c:var(--verify)">copa-verifier Job</span>
+  <span style="--c:var(--api)">API server admission</span>
+  <span style="--c:var(--reg)">registry</span>
+</div>
+
+<div class="stage">
+  <h2>1 &middot; Build a verified patch <small>once per source digest</small></h2>
+  <div class="grid">
+    <div class="card" style="--c:var(--team)"><div class="where">team namespace</div><div class="t"><span class="n">1</span>Deployment opts in</div>
+      <p><code>web</code> runs <code>nginx:1.25.3-alpine</code> with label <code>copa.sh/rollout=enabled</code>. Git never changes.</p></div>
+    <div class="card" style="--c:var(--ctrl)"><div class="where">controller</div><div class="t"><span class="n">2</span>Inventory</div>
+      <p>Resolves each tag to a digest and records one cluster-wide <code>SourceImage</code> per digest. Floating tags are listed, never swapped.</p></div>
+    <div class="card" style="--c:var(--build)"><div class="where">copa-builder</div><div class="t"><span class="n">3</span>Scan Job</div>
+      <p>Trivy client &rarr; in-cluster Trivy server. Report pushed to <code>staging/reports</code>. Demo: 74 fixable OS CVEs.</p></div>
+    <div class="card" style="--c:var(--build)"><div class="where">copa-builder &middot; tainted node</div><div class="t"><span class="n">4</span>Build Job</div>
+      <p><code>copa patch</code> with a rootless BuildKit sidecar, per platform. Pushes to <code>staging/*</code> plus an OpenVEX doc.</p></div>
+    <div class="card" style="--c:var(--verify)"><div class="where">copa-verifier &middot; holds signing key</div><div class="t"><span class="n">5</span>Verify Job</div>
+      <p>Source layers kept as a prefix (8 kept, 2 added), config unchanged but a label, re-scan agrees with VEX. Builds the index, signs a DSSE attestation.</p></div>
+    <div class="card" style="--c:var(--reg)"><div class="where">registry</div><div class="t"><span class="n">6</span>Published to <code>patched/*</code></div>
+      <p><code>nginx:1.25.3-alpine-1</code> pinned by digest, attestation and VEX attached as referrers. About 25&nbsp;s end to end.</p></div>
+  </div>
+</div>
+
+<div class="stage">
+  <h2>2 &middot; Roll it out <small>separately in each namespace</small></h2>
+  <div class="grid">
+    <div class="card" style="--c:var(--ctrl)"><div class="where">controller</div><div class="t"><span class="n">7</span>Catalog check</div>
+      <p>Finds the newest <code>-N</code> revision; checks signature, subject, source digest and platforms. Anything unsigned or mismatched is ignored.</p></div>
+    <div class="card" style="--c:var(--team)"><div class="where">team namespace</div><div class="t"><span class="n">8</span>PatchRollout</div>
+      <p>One per namespace and source. A candidate that was rolled back once is never proposed again.</p></div>
+    <div class="card" style="--c:var(--team)"><div class="where">team namespace</div><div class="t"><span class="n">9</span>Approval</div>
+      <p>Automatic if the namespace allows it, otherwise a <code>PatchApproval</code> for the exact digest (<code>kubectl copa approve</code>).</p></div>
+    <div class="card" style="--c:var(--team)"><div class="where">team namespace &middot; guarded by VAP</div><div class="t"><span class="n">10</span>SwapList updated</div>
+      <p><code>nginx:1.25.3-alpine</code> and its aliases &rarr; <code>patched/&hellip;@sha256</code>. Only the controller may write it, only to pinned <code>patched/*</code> targets.</p></div>
+    <div class="card" style="--c:var(--api)"><div class="where">API server &middot; MutatingAdmissionPolicy</div><div class="t"><span class="n">11</span>Restart and swap</div>
+      <p>Dry-run pod proves admission works, then a <code>restartedAt</code> bump (2 at a time). Each new pod's image is swapped as it's created.</p></div>
+    <div class="card" style="--c:var(--ctrl)"><div class="where">controller</div><div class="t"><span class="n">12</span>Watch and soak</div>
+      <p>Pod spec and the node's runtime <code>imageID</code> must match the digest; pods stay healthy, then the group soaks &rarr; <code>Succeeded</code>.</p></div>
+  </div>
+</div>
+
+<div class="stage">
+  <h2>3 &middot; Back out <small>at any point, including after Succeeded</small></h2>
+  <div class="grid four">
+    <div class="card" style="--c:var(--team)"><div class="where">trigger</div><div class="t">Team or health</div>
+      <p><code>copa.sh/fail-rollout=true</code>, or pods miss the deadline, crash-loop, or run the wrong image.</p></div>
+    <div class="card" style="--c:var(--ctrl)"><div class="where">controller</div><div class="t">Restore</div>
+      <p>SwapList goes back to the previous patch, or the source pinned by digest.</p></div>
+    <div class="card" style="--c:var(--ctrl)"><div class="where">controller</div><div class="t">Re-check</div>
+      <p>Restart again and verify the restored image is what's running.</p></div>
+    <div class="card" style="--c:var(--ctrl)"><div class="where">outcome</div><div class="t"><code>RolledBack</code></div>
+      <p>Or <code>RecoveryFailed</code>. Other namespaces keep the patch.</p></div>
+  </div>
+</div>
+
+<div class="rails"><b>Guardrails</b>
+  <ul>
+    <li>The Deployment still says <code>nginx:1.25.3-alpine</code>; the swap happens only at pod admission.</li>
+    <li>Admission fails open (<code>failurePolicy: Ignore</code>): a pod that misses the swap gets the source image, and the missed-swap detector raises a metric and an event.</li>
+    <li>Job pods get no service-account token; only the verify Job sees the signing key; only signed patches reach a SwapList.</li>
+  </ul>
+</div>
+</body></html>

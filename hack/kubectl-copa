@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# kubectl plugin: kubectl copa approve <rollout>|--all [-n namespace]
+#                 kubectl copa status [-n namespace]
+set -euo pipefail
+cmd=${1:-}; shift || true
+ns_args=()
+target=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -n|--namespace) ns_args=(-n "$2"); shift 2 ;;
+    --all) target="--all"; shift ;;
+    *) target=$1; shift ;;
+  esac
+done
+case $cmd in
+  approve)
+    if [ "$target" = "--all" ]; then
+      rollouts=$(kubectl get patchrollouts "${ns_args[@]}" -o jsonpath='{range .items[?(@.status.phase=="AwaitingApproval")]}{.metadata.name}{"\n"}{end}')
+    else
+      rollouts=$target
+    fi
+    [ -n "$rollouts" ] || { echo "nothing awaiting approval"; exit 0; }
+    for ro in $rollouts; do
+      digest=$(kubectl get patchrollout "$ro" "${ns_args[@]}" -o jsonpath='{.spec.candidate.digest}')
+      tag=$(kubectl get patchrollout "$ro" "${ns_args[@]}" -o jsonpath='{.spec.candidate.tag}')
+      cat <<YAML | kubectl create "${ns_args[@]}" -f -
+apiVersion: rollout.copa.sh/v1alpha1
+kind: PatchApproval
+metadata:
+  generateName: ${ro}-
+spec:
+  rollout: ${ro}
+  candidateDigest: ${digest}
+YAML
+      echo "approved ${tag} (${digest}) for ${ro}"
+    done
+    ;;
+  status)
+    kubectl get sourceimages
+    echo
+    if [ ${#ns_args[@]} -eq 0 ]; then ns_args=(-A); fi
+    kubectl get patchrollouts "${ns_args[@]}"
+    ;;
+  *)
+    echo "usage: kubectl copa approve <rollout>|--all [-n ns] | kubectl copa status [-n ns]" >&2
+    exit 2
+    ;;
+esac

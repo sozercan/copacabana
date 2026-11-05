@@ -1,0 +1,4 @@
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY copa-rollout-controller /usr/local/bin/copa-rollout-controller
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/copa-rollout-controller"]

@@ -1,0 +1,103 @@
+# In-cluster registry for staging and patched images (option 2: no external registry needed for patches).
+# Zot enforces per-repository permissions: the builder account writes staging/**, the verifier account writes
+# patched/**, and patched/** is readable anonymously so nodes and the controller pull without credentials.
+# Because of that, the controller only patches sources that are themselves readable without credentials.
+# The Service has a fixed ClusterIP so node containerd can be pointed at it with a mirror entry.
+# REGISTRY_CLUSTER_IP is filled in by hack/deploy.sh, which also creates the htpasswd and TLS Secrets (the
+# certificate comes from a CA in hack/.keys/registry-tls that nodes, BuildKit, the controller and Jobs trust).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: copa-registry
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: zot-config, namespace: copa-registry}
+data:
+  config.json: |
+    {
+      "distSpecVersion": "1.1.1",
+      "storage": {"rootDirectory": "/var/lib/registry", "gc": true, "gcDelay": "1h", "gcInterval": "6h", "dedupe": true},
+      "http": {
+        "address": "0.0.0.0",
+        "port": "5000",
+        "tls": {"cert": "/etc/zot/tls/tls.crt", "key": "/etc/zot/tls/tls.key"},
+        "auth": {"htpasswd": {"path": "/etc/zot/auth/htpasswd"}},
+        "accessControl": {
+          "repositories": {
+            "staging/**": {
+              "policies": [
+                {"users": ["builder"], "actions": ["read", "create", "update", "delete"]},
+                {"users": ["verifier"], "actions": ["read"]}
+              ],
+              "defaultPolicy": []
+            },
+            "patched/**": {
+              "policies": [{"users": ["verifier"], "actions": ["read", "create", "update"]}],
+              "defaultPolicy": ["read"],
+              "anonymousPolicy": ["read"]
+            }
+          },
+          "adminPolicy": {"users": ["admin"], "actions": ["read", "create", "update", "delete"]}
+        }
+      },
+      "log": {"level": "info"}
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: zot-data, namespace: copa-registry}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: registry, namespace: copa-registry}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: registry}}
+  template:
+    metadata: {labels: {app: registry}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+      containers:
+      - name: zot
+        image: ZOT_IMAGE
+        args: ["serve", "/etc/zot/config.json"]
+        ports: [{containerPort: 5000}]
+        readinessProbe:
+          tcpSocket: {port: 5000}
+          periodSeconds: 5
+        securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+        volumeMounts:
+        - {name: config, mountPath: /etc/zot/config.json, subPath: config.json}
+        - {name: auth, mountPath: /etc/zot/auth}
+        - {name: tls, mountPath: /etc/zot/tls}
+        - {name: data, mountPath: /var/lib/registry}
+      volumes:
+      - {name: config, configMap: {name: zot-config}}
+      - {name: auth, secret: {secretName: zot-htpasswd}}
+      - {name: tls, secret: {secretName: zot-tls}}
+      - {name: data, persistentVolumeClaim: {claimName: zot-data}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: registry, namespace: copa-registry}
+spec:
+  clusterIP: REGISTRY_CLUSTER_IP
+  selector: {app: registry}
+  ports: [{port: 5000, targetPort: 5000}]
+---
+# Lets consumer clusters (and anything else outside this cluster) reach the registry on every node's address.
+apiVersion: v1
+kind: Service
+metadata: {name: registry-nodeport, namespace: copa-registry}
+spec:
+  type: NodePort
+  selector: {app: registry}
+  ports: [{port: 5000, targetPort: 5000, nodePort: 30500}]
