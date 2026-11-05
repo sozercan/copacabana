@@ -72,16 +72,19 @@ func TestAliasesOtherRegistry(t *testing.T) {
 
 func TestFloatingTag(t *testing.T) {
 	cases := map[string]bool{
-		"nginx":                  true,
-		"nginx:latest":           true,
-		"nginx:1":                true,
-		"nginx:1.25":             true,
-		"nginx:1.25-alpine":      true,
-		"nginx:alpine":           true,
-		"nginx:1.25.3":           false,
-		"nginx:1.25.3-alpine":    false,
-		"redis:7.2.4-bookworm":   false,
-		"myapp:2026.11.03-abc12": false,
+		"nginx":                       true,
+		"nginx:latest":                true,
+		"nginx:1":                     true,
+		"nginx:1.25":                  true,
+		"nginx:1.25-alpine":           true,
+		"nginx:1.25-alpine3.18":       true,
+		"python:3.12-slim-bookworm":   true,
+		"python:3.12.1-slim-bookworm": false,
+		"nginx:alpine":                true,
+		"nginx:1.25.3":                false,
+		"nginx:1.25.3-alpine":         false,
+		"redis:7.2.4-bookworm":        false,
+		"myapp:2026.11.03-abc12":      false,
 		"nginx@sha256:4f7a0000000000000000000000000000000000000000000000000000000000ab": false,
 	}
 	for in, want := range cases {

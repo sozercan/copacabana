@@ -116,7 +116,7 @@ Demo timings are short (`--healthy-for=30s --soak=2m`); see `config/manager/cont
 | `PLATFORMS` | `linux/amd64` | Platforms every patch must cover |
 | `ALLOW_EMULATION` | `false` | Build platforms without matching nodes under qemu |
 | `REPLICAS` | `2` | Controller replicas (leader election) |
-| `SOURCE_AUTH` | | Docker config with logins for private source registries or Docker Hub |
+| `SOURCE_AUTH` | | Docker config with registry logins, for example to avoid Docker Hub's anonymous rate limit. Private sources are still skipped |
 | `EXTRA_INSECURE` | | More plain-HTTP source registries |
 | `NOTATION` | `false` | Also sign patched images with Notation (test certificate) for an image integrity policy; see `hack/edge/kyverno-policy.sh` |
 | `IMAGE_REGISTRY`, `IN_CLUSTER_REGISTRY`, `TAG` | `localhost:5001`, `kind-registry:5000`, `dev` | Where the controller and worker images are pushed, the same registry as nodes reach it, and their tag |

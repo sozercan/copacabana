@@ -2,7 +2,8 @@ FROM aquasec/trivy:0.76.1 AS trivy
 
 FROM alpine:3.22 AS notation
 ARG NOTATION_VERSION=1.3.2
-RUN wget -qO- https://github.com/notaryproject/notation/releases/download/v${NOTATION_VERSION}/notation_${NOTATION_VERSION}_linux_amd64.tar.gz \
+ARG TARGETARCH
+RUN wget -qO- https://github.com/notaryproject/notation/releases/download/v${NOTATION_VERSION}/notation_${NOTATION_VERSION}_linux_${TARGETARCH}.tar.gz \
     | tar -xz -C /usr/local/bin notation
 
 FROM gcr.io/distroless/static-debian12:nonroot

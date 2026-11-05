@@ -6,8 +6,9 @@
 #   REGISTRY=external               staging and patched images go to the host's kind-registry (no auth)
 #   REGISTRY_REMOTE=ip:port         with REGISTRY=in-cluster, don't run Zot here; reach another cluster's registry
 #                                   (its NodePort) under the same name. For consumer clusters.
-#   SOURCE_AUTH=path/config.json   Docker config with logins for private source registries (and Docker Hub, to avoid
-#                                   its anonymous rate limit). Merged into the controller's and Jobs' credentials.
+#   SOURCE_AUTH=path/config.json   Docker config with registry logins, such as Docker Hub's to avoid its anonymous
+#                                   rate limit. Merged into the controller's and Jobs' credentials. Sources that
+#                                   can't be read without credentials still aren't patched (see docs/design.md).
 #   EXTRA_INSECURE=host:port,...    more plain-HTTP source registries
 #   NOTATION=true                   also sign patched images with Notation (test certificate in hack/.keys/notation)
 #                                   for an image integrity policy such as hack/edge/kyverno-policy.sh

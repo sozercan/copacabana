@@ -99,8 +99,9 @@ func Aliases(p Parsed) []string {
 }
 
 var (
-	// Tags with fewer than three numeric components (1, 1.25, v2) usually float to newer releases.
-	shortVersion = regexp.MustCompile(`^v?\d+(\.\d+)?(-[a-z0-9]+)?$`)
+	// Tags with fewer than three numeric components (1, 1.25, v2) usually float to newer releases, whatever
+	// variant follows them (1.25-alpine3.18, 3.12-slim-bookworm).
+	shortVersion = regexp.MustCompile(`^v?\d+(\.\d+)?(-[A-Za-z0-9._-]+)?$`)
 	floatingName = map[string]bool{
 		"latest": true, "stable": true, "mainline": true, "edge": true, "lts": true,
 		"alpine": true, "slim": true, "bookworm": true, "bullseye": true, "jammy": true, "noble": true,

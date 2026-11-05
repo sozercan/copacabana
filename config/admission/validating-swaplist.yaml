@@ -24,6 +24,10 @@ spec:
     expression: "has(object.spec.images) ? object.spec.images : {}"
   - name: entries
     expression: "has(object.spec.entries) ? object.spec.entries : []"
+  # Every alias as a set. Built once, so membership checks stay linear in the number of swaps. A duplicate alias
+  # is an evaluation error, which also denies the write.
+  - name: aliasSet
+    expression: "variables.entries.map(e, e.?aliases.orValue([])).flatten().transformMapEntry(i, a, {a: true})"
   validations:
   - expression: >-
       request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller" ||
@@ -36,11 +40,11 @@ spec:
         (!has(e.selected) || e.selected.ref.matches(variables.patchedRef)) &&
         (!has(e.previous) || e.previous.ref.matches(variables.patchedRef)))
     message: "selected and previous patches must be digest-pinned images under the patched prefix, and the fallback must pin the source digest"
-  # Linear in the number of aliases (a nested images-by-entries check exceeds the CEL cost budget at ~150
-  # entries): every alias maps to its entry's target, and there are exactly as many keys as aliases, so no key
-  # exists that isn't some entry's alias.
+  # Every key is some entry's alias, and every alias maps to its entry's target. (A nested images-by-entries
+  # check exceeds the CEL cost budget at ~150 entries; this one handles 500, past the point where the object-size
+  # limit is reached first.)
   - expression: >-
-      variables.images.size() == variables.entries.map(e, e.?aliases.orValue([]).size()).sum() &&
+      variables.images.all(k, k in variables.aliasSet) &&
       variables.entries.all(e, e.?aliases.orValue([]).all(a,
         variables.images[?a].orValue('') == (has(e.selected) ? e.selected.ref : e.fallback)))
     message: "every swap must be an alias of an entry and point at that entry's selected patch or its pinned fallback"

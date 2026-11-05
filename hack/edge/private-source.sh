@@ -21,11 +21,8 @@ spec:
       containers: [{name: web, image: "$img", readinessProbe: {httpGet: {path: /, port: 80}, periodSeconds: 3}}]
 YAML
 done
-timeout 900 bash -c "until kubectl -n $NS get patchrollout --no-headers 2>/dev/null | grep -qE 'Succeeded|RolledBack|Recovery'; do sleep 10; done" || echo TIMEOUT
-kubectl get patchbuilds -n copa-builder -o json | python3 -c '
-import json,sys
-for i in json.load(sys.stdin)["items"]:
-    if "private-registry" in i["spec"]["repository"]: print("build:", i["spec"]["reason"], i["status"].get("phase"), i["status"].get("promoted",{}).get("tag",""), i["status"].get("message","")[:150])'
-kubectl -n $NS get patchrollout -o custom-columns=SRC:.spec.source,CAND:.spec.candidate.tag,PHASE:.status.phase --no-headers
-echo "web pods: $(kubectl -n $NS get pods -l app=web -o jsonpath='{range .items[*]}{.spec.containers[0].image}{" "}{end}' | sed 's|registry.copa-registry.svc.cluster.local:5000/patched/|PATCHED:|g; s|@sha256:\(.\{12\}\)[0-9a-f]*|@\1|g')"
-echo "typo event: $(kubectl -n $NS get events --field-selector reason=ImageNotResolved -o jsonpath='{.items[0].message}' | cut -c1-200)"
+# Private sources aren't patched: their patched copies would be readable without credentials.
+timeout 120 bash -c "until kubectl -n $NS get events --field-selector reason=PrivateSource,involvedObject.name=web -o name | grep -q .; do sleep 5; done" || echo TIMEOUT
+kubectl -n $NS get events --field-selector reason=PrivateSource -o custom-columns=OBJ:.involvedObject.name,MSG:.message --no-headers | sort -u
+kubectl -n $NS get events --field-selector reason=ImageNotResolved -o custom-columns=OBJ:.involvedObject.name,MSG:.message --no-headers | sort -u | cut -c1-160
+echo "source images from private-registry: $(kubectl get sourceimages -o jsonpath='{range .items[*]}{.spec.repository}{"\n"}{end}' | grep -c private-registry)"

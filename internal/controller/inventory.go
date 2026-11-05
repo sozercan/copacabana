@@ -43,14 +43,21 @@ type InventoryReconciler struct {
 	Registry *registry.Client
 	Recorder events.EventRecorder
 
-	mu    sync.Mutex
-	cache map[string]cachedResolve
+	mu     sync.Mutex
+	cache  map[string]cachedResolve
+	public map[string]cachedPublic
 }
 
 type cachedResolve struct {
 	at  time.Time
 	res *registry.Resolved
 	err error
+}
+
+type cachedPublic struct {
+	at     time.Time
+	public bool
+	err    error
 }
 
 // SetupWithManager registers the reconciler. Every workload or Namespace change triggers one inventory pass.
@@ -138,6 +145,21 @@ func (r *InventoryReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 		gk := u.parsed.Repository + "@" + res.Digest
 		g, ok := groups[gk]
 		if !ok {
+			// Anyone who can pull from the patched registry can read a patch, including the source layers it
+			// copies. Only patch sources that are already readable without credentials.
+			public, err := r.isPublic(ctx, gk)
+			if err != nil || !public {
+				reason := "it isn't readable without credentials, and patched copies would be"
+				if err != nil {
+					reason = fmt.Sprintf("can't check whether it's readable without credentials: %v", err)
+				}
+				log.Info("skipping source", "reference", key, "reason", reason)
+				for _, o := range u.objs {
+					r.Recorder.Eventf(o, nil, corev1.EventTypeWarning, "PrivateSource", "Inventory",
+						"%s won't be patched: %s", key, reason)
+				}
+				continue
+			}
 			g = &group{repo: u.parsed.Repository, res: res}
 			groups[gk] = g
 		}
@@ -249,6 +271,24 @@ func (r *InventoryReconciler) resolve(ctx context.Context, ref string) (*registr
 	r.cache[ref] = cachedResolve{at: time.Now(), res: res, err: err}
 	r.mu.Unlock()
 	return res, err
+}
+
+// isPublic caches Registry.Public for the resolve interval, so access changes are picked up as tags are.
+func (r *InventoryReconciler) isPublic(ctx context.Context, pinned string) (bool, error) {
+	r.mu.Lock()
+	if r.public == nil {
+		r.public = map[string]cachedPublic{}
+	}
+	c, ok := r.public[pinned]
+	r.mu.Unlock()
+	if ok && time.Since(c.at) < r.Config.ResolveInterval {
+		return c.public, c.err
+	}
+	public, err := r.Registry.Public(ctx, pinned)
+	r.mu.Lock()
+	r.public[pinned] = cachedPublic{at: time.Now(), public: public, err: err}
+	r.mu.Unlock()
+	return public, err
 }
 
 // templateImages returns the images of a pod template's containers and init containers.

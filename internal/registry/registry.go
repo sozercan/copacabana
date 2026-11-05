@@ -94,6 +94,25 @@ func IsNotFound(err error) bool {
 	return false
 }
 
+// Public reports whether ref can be read without credentials. Call it after the reference resolved with
+// credentials: a 401, 403 or 404 then means the content is private (some registries hide private repositories
+// behind a 404). Other failures, such as rate limits, are returned as errors.
+func (c *Client) Public(ctx context.Context, ref string) (bool, error) {
+	r, err := c.ParseRef(ref)
+	if err != nil {
+		return false, err
+	}
+	_, err = remote.Head(r, remote.WithContext(ctx), remote.WithAuth(authn.Anonymous))
+	var terr *transport.Error
+	if errors.As(err, &terr) {
+		switch terr.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			return false, nil
+		}
+	}
+	return err == nil, err
+}
+
 // Resolved is a reference resolved to content.
 type Resolved struct {
 	Digest    string

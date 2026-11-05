@@ -151,7 +151,7 @@ func runVerify(ctx context.Context, args []string) (any, error) {
 	}
 	var sign worker.Signer
 	if _, err := os.Stat(*notationKey); err == nil {
-		sign = worker.NotationSigner(*notationKey, *notationCert, strings.Split(os.Getenv("COPA_INSECURE_REGISTRIES"), ","))
+		sign = worker.NotationSigner(*notationKey, *notationCert, strings.Split(c.insecure, ","))
 	}
 	return worker.Verify(ctx, c.registry(), c.scanner(), spec, key, sign)
 }

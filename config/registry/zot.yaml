@@ -1,6 +1,7 @@
 # In-cluster registry for staging and patched images (option 2: no external registry needed for patches).
 # Zot enforces per-repository permissions: the builder account writes staging/**, the verifier account writes
 # patched/**, and patched/** is readable anonymously so nodes and the controller pull without credentials.
+# Because of that, the controller only patches sources that are themselves readable without credentials.
 # The Service has a fixed ClusterIP so node containerd can be pointed at it with a mirror entry.
 # REGISTRY_CLUSTER_IP is filled in by hack/deploy.sh, which also creates the htpasswd and TLS Secrets (the
 # certificate comes from a CA in hack/.keys/registry-tls that nodes, BuildKit, the controller and Jobs trust).
