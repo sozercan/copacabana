@@ -12,6 +12,8 @@
 #   NOTATION=true                   also sign patched images with Notation (test certificate in hack/.keys/notation)
 #                                   for an image integrity policy such as hack/edge/kyverno-policy.sh
 #   MODE=builder|consumer|report-only, PLATFORMS=linux/amd64[,linux/arm64], REPLICAS=2
+#   IMAGE_REGISTRY=localhost:5001, IN_CLUSTER_REGISTRY=kind-registry:5000, TAG=dev
+#                                   where the controller and worker images are pushed and pulled from
 set -euo pipefail
 cd "$(dirname "$0")/.."
 KCTX=${KCTX:-kind-copa}
@@ -36,13 +38,16 @@ case "$REGISTRY" in
 esac
 INSECURE="${INSECURE}${EXTRA_INSECURE:+,${EXTRA_INSECURE}}"   # more plain-HTTP source registries
 
-if [ -z "${SKIP_IMAGES:-}" ]; then make images; fi
-
-# The in-cluster names use kind-registry:5000; pin by digest so Jobs never run a stale worker.
-ctrl_digest=$(crane digest --insecure localhost:5001/copa/copa-rollout-controller:dev)
-worker_digest=$(crane digest --insecure localhost:5001/copa/copa-worker:dev)
-CONTROLLER_IMAGE="kind-registry:5000/copa/copa-rollout-controller@${ctrl_digest}"
-WORKER_IMAGE="kind-registry:5000/copa/copa-worker@${worker_digest}"
+# Controller and worker images: pushed to IMAGE_REGISTRY, pulled from IN_CLUSTER_REGISTRY (the same registry as
+# nodes reach it), pinned by digest so Jobs never run a stale worker.
+IMAGE_REGISTRY=${IMAGE_REGISTRY:-localhost:5001}
+IN_CLUSTER_REGISTRY=${IN_CLUSTER_REGISTRY:-kind-registry:5000}
+TAG=${TAG:-dev}
+if [ -z "${SKIP_IMAGES:-}" ]; then make images IMAGE_REGISTRY="$IMAGE_REGISTRY" TAG="$TAG"; fi
+ctrl_digest=$(crane digest --insecure "${IMAGE_REGISTRY}/copa/copa-rollout-controller:${TAG}")
+worker_digest=$(crane digest --insecure "${IMAGE_REGISTRY}/copa/copa-worker:${TAG}")
+CONTROLLER_IMAGE="${IN_CLUSTER_REGISTRY}/copa/copa-rollout-controller@${ctrl_digest}"
+WORKER_IMAGE="${IN_CLUSTER_REGISTRY}/copa/copa-worker@${worker_digest}"
 
 # Signing key for the verify Job, public key for the controller. Generated once.
 mkdir -p hack/.keys

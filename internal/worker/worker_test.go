@@ -39,6 +39,20 @@ func TestCheckScan(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+	t.Run("patched image has no OS to assess", func(t *testing.T) {
+		alpine := &trivy.OSInfo{Family: "alpine", Name: "3.18.6"}
+		withOS := report(vuln("CVE-1", "busybox", "1.2"))
+		withOS.Metadata.OS = alpine
+		noDB := report()
+		if _, err := CheckScan(withOS, noDB, map[string]bool{"CVE-1/busybox": true}, false); err == nil || !strings.Contains(err.Error(), "scans as") {
+			t.Fatalf("err = %v", err)
+		}
+		fixedOK := report()
+		fixedOK.Metadata.OS = alpine
+		if _, err := CheckScan(withOS, fixedOK, map[string]bool{"CVE-1/busybox": true}, false); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("new vulnerability", func(t *testing.T) {
 		patched := report(vuln("CVE-9", "newpkg", ""))
 		if _, err := CheckScan(src, patched, nil, false); err == nil {
@@ -125,9 +139,41 @@ func TestCheckConfig(t *testing.T) {
 	if err := CheckConfig(base, withLabel); err != nil {
 		t.Errorf("BaseImage label change rejected: %v", err)
 	}
-	changedCmd := setConfig(t, base, func(c *v1.Config) { c.Cmd = []string{"sh"} })
-	if err := CheckConfig(base, changedCmd); err == nil {
-		t.Error("cmd change accepted")
+	onlyCopaLabel := setConfig(t, base, func(c *v1.Config) { c.Labels = map[string]string{"a": "b", "BaseImage": "x"} })
+	if err := CheckConfig(base, onlyCopaLabel); err != nil {
+		t.Errorf("BaseImage label rejected: %v", err)
+	}
+	for name, change := range map[string]func(*v1.Config){
+		"cmd":         func(c *v1.Config) { c.Cmd = []string{"sh"} },
+		"healthcheck": func(c *v1.Config) { c.Healthcheck = &v1.HealthConfig{Test: []string{"CMD", "true"}} },
+		"shell":       func(c *v1.Config) { c.Shell = []string{"/bin/bash", "-c"} },
+		"onbuild":     func(c *v1.Config) { c.OnBuild = []string{"RUN id"} },
+		"argsEscaped": func(c *v1.Config) { c.ArgsEscaped = true },
+		"label":       func(c *v1.Config) { c.Labels["a"] = "c" },
+	} {
+		if err := CheckConfig(base, setConfig(t, base, change)); err == nil {
+			t.Errorf("%s change accepted", name)
+		}
+	}
+}
+
+// os/exec copies stdout and stderr concurrently into the same buffer; run with -race.
+func TestTailBufferConcurrentWrites(t *testing.T) {
+	var buf tailBuffer
+	out, errw := multi{&buf}, multi{&buf}
+	done := make(chan struct{})
+	for _, w := range []multi{out, errw} {
+		go func() {
+			for range 1000 {
+				_, _ = w.Write([]byte("0123456789"))
+			}
+			done <- struct{}{}
+		}()
+	}
+	<-done
+	<-done
+	if got := len(buf.String()); got != 1500 {
+		t.Fatalf("tail length = %d, want 1500", got)
 	}
 }
 

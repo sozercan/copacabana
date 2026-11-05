@@ -122,6 +122,10 @@ func Sign(st *Statement, priv ed25519.PrivateKey) ([]byte, error) {
 
 // Verify checks an envelope against a trusted public key and returns the statement.
 func Verify(envelope []byte, pub ed25519.PublicKey) (*Statement, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		// ed25519.Verify panics on a key of the wrong size, such as no key in report-only mode.
+		return nil, errors.New("no trusted public key configured")
+	}
 	var env Envelope
 	if err := json.Unmarshal(envelope, &env); err != nil {
 		return nil, fmt.Errorf("parsing envelope: %w", err)

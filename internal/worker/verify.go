@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -210,6 +211,9 @@ func verifyPlatform(ctx context.Context, reg *registry.Client, sc trivy.Scanner,
 	if err != nil {
 		return nil, nil, err
 	}
+	if n := len(srcReport.Fixable()); n > 0 && len(fixed) == 0 {
+		return nil, nil, fmt.Errorf("post-patch scan: none of the source's %d fixable vulnerabilities was confirmed fixed", n)
+	}
 	d, err := staged.Digest()
 	if err != nil {
 		return nil, nil, err
@@ -245,7 +249,8 @@ func CheckLayers(src, patched v1.Image) error {
 	return nil
 }
 
-// CheckConfig requires the runtime config to match the source except for labels Copa sets.
+// CheckConfig requires the image config to match the source except for labels Copa sets. The whole runtime
+// config is compared (entrypoint, env, user, healthcheck, shell, onbuild and the rest), not a list of fields.
 func CheckConfig(src, patched v1.Image) error {
 	sc, err := src.ConfigFile()
 	if err != nil {
@@ -255,52 +260,55 @@ func CheckConfig(src, patched v1.Image) error {
 	if err != nil {
 		return err
 	}
-	if sc.OS != pc.OS || sc.Architecture != pc.Architecture || sc.Variant != pc.Variant {
+	if sc.OS != pc.OS || sc.Architecture != pc.Architecture || sc.Variant != pc.Variant || sc.OSVersion != pc.OSVersion ||
+		!slices.Equal(sc.OSFeatures, pc.OSFeatures) {
 		return fmt.Errorf("config check: platform changed from %s/%s to %s/%s", sc.OS, sc.Architecture, pc.OS, pc.Architecture)
 	}
-	a, b := sc.Config, pc.Config
-	var diffs []string
-	if !slices.Equal(a.Entrypoint, b.Entrypoint) {
-		diffs = append(diffs, "entrypoint")
+	a, b := runtimeConfig(sc.Config), runtimeConfig(pc.Config)
+	if reflect.DeepEqual(a, b) {
+		return nil
 	}
-	if !slices.Equal(a.Cmd, b.Cmd) {
-		diffs = append(diffs, "cmd")
-	}
-	if !slices.Equal(a.Env, b.Env) {
-		diffs = append(diffs, "env")
-	}
-	if a.User != b.User {
-		diffs = append(diffs, "user")
-	}
-	if a.WorkingDir != b.WorkingDir {
-		diffs = append(diffs, "workingDir")
-	}
-	if !maps.Equal(a.ExposedPorts, b.ExposedPorts) {
-		diffs = append(diffs, "exposedPorts")
-	}
-	if !maps.Equal(a.Volumes, b.Volumes) {
-		diffs = append(diffs, "volumes")
-	}
-	if a.StopSignal != b.StopSignal {
-		diffs = append(diffs, "stopSignal")
-	}
-	la, lb := maps.Clone(a.Labels), maps.Clone(b.Labels)
+	return fmt.Errorf("config check: patched image changed %s", strings.Join(configDiff(a, b), ", "))
+}
+
+// runtimeConfig returns c without the labels Copa may change, with empty collections as nil.
+func runtimeConfig(c v1.Config) v1.Config {
+	c.Labels = maps.Clone(c.Labels)
 	for _, k := range labelsCopaMayChange {
-		delete(la, k)
-		delete(lb, k)
+		delete(c.Labels, k)
 	}
-	if !maps.Equal(la, lb) {
-		diffs = append(diffs, "labels")
+	if len(c.Labels) == 0 {
+		c.Labels = nil
 	}
-	if len(diffs) > 0 {
-		return fmt.Errorf("config check: patched image changed %s", strings.Join(diffs, ", "))
+	if len(c.ExposedPorts) == 0 {
+		c.ExposedPorts = nil
 	}
-	return nil
+	if len(c.Volumes) == 0 {
+		c.Volumes = nil
+	}
+	return c
+}
+
+// configDiff names the top-level config fields that differ, for the error message.
+func configDiff(a, b v1.Config) []string {
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	var out []string
+	for i := range va.NumField() {
+		if !reflect.DeepEqual(va.Field(i).Interface(), vb.Field(i).Interface()) {
+			out = append(out, va.Type().Field(i).Name)
+		}
+	}
+	return out
 }
 
 // CheckScan compares the source and patched scans. Every vulnerability the build claimed fixed must be gone,
 // and, unless allowed, no vulnerability may appear that the source didn't have. It returns the confirmed fixes.
 func CheckScan(src, patched *trivy.Report, claimedFixed map[string]bool, allowNew bool) ([]string, error) {
+	// A missing finding only means "fixed" if the patched image could be assessed. An appended layer that removes
+	// or replaces the package database would otherwise make every vulnerability look fixed.
+	if src.OSFamily() != "" && patched.OSFamily() != src.OSFamily() {
+		return nil, fmt.Errorf("post-patch scan: source OS is %q but the patched image scans as %q", src.OSFamily(), patched.OSFamily())
+	}
 	srcKeys := src.Keys()
 	patchedKeys := patched.Keys()
 	var stillPresent, introduced, fixed []string

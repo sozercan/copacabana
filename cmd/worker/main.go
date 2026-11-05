@@ -93,7 +93,7 @@ func (c *common) registry() *registry.Client {
 }
 
 func (c *common) scanner() trivy.Scanner {
-	return trivy.Scanner{Server: c.trivyServer, Insecure: c.insecure != "", Binary: c.trivyBin}
+	return trivy.Scanner{Server: c.trivyServer, InsecureRegistries: strings.Split(c.insecure, ","), Binary: c.trivyBin}
 }
 
 func runScan(ctx context.Context, args []string) (any, error) {

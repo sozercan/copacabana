@@ -29,6 +29,9 @@ import (
 // revision even when the current patch has no new fixes (after a Copa upgrade or a signing-key rotation, say).
 const AnnotationRebuild = "copa.sh/rebuild"
 
+// promotedVerifyGrace is how long scheduling waits for the catalog to verify a newly promoted patch.
+const promotedVerifyGrace = 10 * time.Minute
+
 // LabelSource holds a hash of the canonical source reference on PatchRollouts.
 const LabelSource = "copa.sh/source"
 
@@ -88,7 +91,15 @@ func (r *SourceImageReconciler) Reconcile(ctx context.Context, req reconcile.Req
 		return requeue, r.patchStatus(ctx, &si, orig, cond)
 	}
 
-	ref, err := r.Catalog.Latest(ctx, si.Spec.Repository, si.Spec.Digest, si.Status.References[0], si.Spec.Platforms)
+	// ref is the newest patch that verifies with the trusted key on this pass. Status.Current is only the last
+	// one that did: after a signing-key rotation it no longer verifies, and mustn't be offered or rescanned.
+	// Report-only mode may run without a key, and then has nothing to verify.
+	var ref *v1alpha1.PatchRef
+	var err error
+	if len(r.Config.PublicKey) > 0 {
+		ref, err = r.Catalog.Latest(ctx, si.Spec.Repository, si.Spec.Digest, si.Status.References[0], si.Spec.Platforms)
+	}
+	catalogErr := err
 	switch {
 	case err != nil && ref != nil:
 		log.Info("ignored patched revisions that don't verify", "source", si.Name, "error", err.Error())
@@ -111,13 +122,14 @@ func (r *SourceImageReconciler) Reconcile(ctx context.Context, req reconcile.Req
 
 	building := false
 	if r.Config.Mode == ModeBuilder || r.Config.Mode == ModeReportOnly {
-		building, err = r.schedule(ctx, &si)
+		building, err = r.schedule(ctx, &si, ref)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 
-	if r.Config.Mode != ModeReportOnly && si.Status.Current != nil {
+	// New rollouts only for a patch verified on this pass.
+	if r.Config.Mode != ModeReportOnly && ref != nil {
 		if err := r.ensureRollouts(ctx, &si); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -126,6 +138,9 @@ func (r *SourceImageReconciler) Reconcile(ctx context.Context, req reconcile.Req
 	switch {
 	case si.Status.Gap != "":
 		cond.Reason, cond.Message = "Gap", si.Status.Gap
+	case si.Status.Current != nil && ref == nil && catalogErr != nil:
+		cond.Reason = "Unverified"
+		cond.Message = trimMessage(fmt.Sprintf("%s no longer verifies; not offered to new namespaces: %v", si.Status.Current.Tag, catalogErr))
 	case si.Status.Current != nil:
 		cond.Status, cond.Reason = metav1.ConditionTrue, "Patched"
 		cond.Message = si.Status.Current.Tag
@@ -150,7 +165,8 @@ func (r *SourceImageReconciler) patchStatus(ctx context.Context, si, orig *v1alp
 
 // schedule starts a PatchBuild when the source is new, the rescan interval passed, or a rebuild was requested.
 // It returns whether a build is in progress.
-func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.SourceImage) (bool, error) {
+// verified is the current patch if it verified on this pass, and is the baseline a rescan compares against.
+func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.SourceImage, verified *v1alpha1.PatchRef) (bool, error) {
 	var builds v1alpha1.PatchBuildList
 	if err := r.List(ctx, &builds, client.InNamespace(r.Config.BuilderNamespace)); err != nil {
 		return false, err
@@ -187,9 +203,14 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 		// build now rather than waiting for the rescan interval.
 		platformsChanged = !slices.Equal(platformNames(last.Spec.Platforms), platformNames(si.Spec.Platforms))
 		if !platformsChanged && last.Status.Phase == v1alpha1.BuildPromoted && last.Status.Promoted != nil &&
-			(si.Status.Current == nil || si.Status.Current.Digest != last.Status.Promoted.Digest) {
-			// Wait for the catalog to verify the promoted patch before deciding anything else.
-			return false, nil
+			(verified == nil || verified.Digest != last.Status.Promoted.Digest) {
+			// Wait for the catalog to verify the promoted patch before deciding anything else, but not forever:
+			// a promoted patch that never verifies (its tag overwritten, or signed with a key no longer trusted)
+			// would otherwise block every later build.
+			if finished := last.Status.CompletionTime; finished == nil || time.Since(finished.Time) < promotedVerifyGrace {
+				return false, nil
+			}
+			si.Status.Gap = fmt.Sprintf("promoted %s doesn't verify", last.Status.Promoted.Tag)
 		}
 		if !rebuild && !platformsChanged && time.Since(last.CreationTimestamp.Time) < r.Config.RescanInterval {
 			return false, nil
@@ -200,7 +221,7 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 	}
 
 	reason := "NewSource"
-	baseline := si.Status.Current
+	baseline := verified
 	switch {
 	case si.Annotations[AnnotationRebuild] == "force":
 		reason, baseline = "Forced", nil

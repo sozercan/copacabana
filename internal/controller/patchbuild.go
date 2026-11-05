@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -29,6 +30,13 @@ type PatchBuildReconciler struct {
 	client.Client
 	Config   *Config
 	Recorder events.EventRecorder
+
+	// publishing holds, per patched repository and tag base, the build allowed to verify and publish. The
+	// verify Job picks the next free revision tag, so two builds publishing under the same tag base at once
+	// (a tag moved while its old digest was still building) could pick the same revision and overwrite each
+	// other's tag.
+	mu         sync.Mutex
+	publishing map[string]string
 }
 
 // SetupWithManager registers the reconciler. Jobs live in two namespaces, so they're linked by label, not owner.
@@ -237,6 +245,14 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 		return ctrl.Result{Requeue: true}, nil
 
 	case v1alpha1.BuildVerifying:
+		ok, err := r.reservePublish(ctx, pb)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			pb.Status.Message = "waiting for another build of " + TagBase(pb.Spec.Reference) + " to publish"
+			return wait, nil
+		}
 		vs := worker.VerifySpec{
 			PatchBuild:              pb.Name,
 			SourceRepository:        pb.Spec.Repository,
@@ -278,6 +294,55 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 		return wait, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// reservePublish reports whether pb may run its verify Job now: no other unfinished build holds the
+// publication slot for the same patched repository and tag base. The slot is kept in memory, which is
+// enough with a single leader; after a restart, a build whose verify Job already exists keeps it.
+func (r *PatchBuildReconciler) reservePublish(ctx context.Context, pb *v1alpha1.PatchBuild) (bool, error) {
+	key := r.Config.PatchedRepository(pb.Spec.Repository) + ":" + TagBase(pb.Spec.Reference)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.publishing == nil {
+		r.publishing = map[string]string{}
+	}
+	holder := r.publishing[key]
+	if holder == pb.Name {
+		return true, nil
+	}
+	if holder != "" {
+		var other v1alpha1.PatchBuild
+		err := r.Get(ctx, client.ObjectKey{Namespace: pb.Namespace, Name: holder}, &other)
+		if err == nil && !other.Status.Phase.Terminal() {
+			return false, nil
+		}
+		if err != nil && !apierrors.IsNotFound(err) {
+			return false, err
+		}
+	} else {
+		var builds v1alpha1.PatchBuildList
+		if err := r.List(ctx, &builds, client.InNamespace(pb.Namespace)); err != nil {
+			return false, err
+		}
+		for i := range builds.Items {
+			other := &builds.Items[i]
+			if other.Name == pb.Name || other.Status.Phase != v1alpha1.BuildVerifying ||
+				r.Config.PatchedRepository(other.Spec.Repository)+":"+TagBase(other.Spec.Reference) != key {
+				continue
+			}
+			var job batchv1.Job
+			err := r.Get(ctx, client.ObjectKey{Namespace: r.Config.VerifierNamespace, Name: jobName(other, "verify", "")}, &job)
+			if err == nil {
+				r.publishing[key] = other.Name
+				return false, nil
+			}
+			if !apierrors.IsNotFound(err) {
+				return false, err
+			}
+		}
+	}
+	r.publishing[key] = pb.Name
+	return true, nil
 }
 
 func (r *PatchBuildReconciler) fail(pb *v1alpha1.PatchBuild, stage, msg string) (ctrl.Result, error) {

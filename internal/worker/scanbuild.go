@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -97,21 +98,36 @@ func Build(ctx context.Context, reg *registry.Client, o BuildOptions) (*BuildRes
 	stagedRepo := targetRef.Context().Name()
 	res := &BuildResult{StagedRef: stagedRepo + "@" + desc.Digest.String()}
 
-	vex, err := os.ReadFile(vexPath)
-	if err == nil && len(vex) > 0 {
-		fixed, err := VEXFixed(vex)
-		if err != nil {
-			return nil, err
-		}
-		res.Fixed = len(fixed)
-		subject := desc.Descriptor
-		subject.Platform = nil
-		ref, err := reg.PushArtifact(ctx, stagedRepo, registry.ArtifactTypeVEX, registry.MediaTypeVEX, vex, &subject, nil, "")
-		if err != nil {
-			return nil, err
-		}
-		res.VEXRef = ref
+	// Copa writes the VEX document only when it updated at least one package. A platform with fixable
+	// findings and no VEX was not patched, whatever image Copa pushed.
+	rep, err := trivy.Parse(report)
+	if err != nil {
+		return nil, err
 	}
+	vex, err := os.ReadFile(vexPath)
+	switch {
+	case err != nil && !os.IsNotExist(err):
+		return nil, fmt.Errorf("reading VEX output: %w", err)
+	case len(vex) == 0 && len(rep.Fixable()) > 0:
+		return nil, fmt.Errorf("copa updated no packages: no VEX output for %d fixable vulnerabilities", len(rep.Fixable()))
+	case len(vex) == 0:
+		return res, nil
+	}
+	fixed, err := VEXFixed(vex)
+	if err != nil {
+		return nil, err
+	}
+	if len(fixed) == 0 && len(rep.Fixable()) > 0 {
+		return nil, fmt.Errorf("copa's VEX output marks nothing fixed")
+	}
+	res.Fixed = len(fixed)
+	subject := desc.Descriptor
+	subject.Platform = nil
+	ref, err := reg.PushArtifact(ctx, stagedRepo, registry.ArtifactTypeVEX, registry.MediaTypeVEX, vex, &subject, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	res.VEXRef = ref
 	return res, nil
 }
 
@@ -193,9 +209,16 @@ func layerDigests(img v1.Image) ([]string, error) {
 	return out, nil
 }
 
-type tailBuffer struct{ b []byte }
+// tailBuffer keeps the end of a command's output. os/exec copies stdout and stderr from separate goroutines
+// when they're different writers, so writes are serialized.
+type tailBuffer struct {
+	mu sync.Mutex
+	b  []byte
+}
 
 func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.b = append(t.b, p...)
 	if len(t.b) > 8192 {
 		t.b = t.b[len(t.b)-8192:]
@@ -204,7 +227,9 @@ func (t *tailBuffer) Write(p []byte) (int, error) {
 }
 
 func (t *tailBuffer) String() string {
+	t.mu.Lock()
 	s := string(t.b)
+	t.mu.Unlock()
 	if len(s) > 1500 {
 		s = s[len(s)-1500:]
 	}

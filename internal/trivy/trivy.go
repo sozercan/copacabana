@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
+
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // Report is the subset of the Trivy JSON report this project reads.
@@ -101,8 +104,9 @@ func (r *Report) Keys() map[string]bool {
 type Scanner struct {
 	// Server is the Trivy server URL. Empty means standalone mode.
 	Server string
-	// Insecure allows plain-HTTP registries.
-	Insecure bool
+	// InsecureRegistries are plain-HTTP registry hosts. Trivy's --insecure is set only when the scanned image
+	// is on one of them, since it also turns off certificate verification.
+	InsecureRegistries []string
 	// Binary is the trivy binary path.
 	Binary string
 }
@@ -129,7 +133,7 @@ func (s Scanner) Scan(ctx context.Context, image string) ([]byte, error) {
 	if s.Server != "" {
 		args = append(args, "--server", s.Server)
 	}
-	if s.Insecure {
+	if s.insecure(image) {
 		args = append(args, "--insecure")
 	}
 	args = append(args, image)
@@ -141,6 +145,15 @@ func (s Scanner) Scan(ctx context.Context, image string) ([]byte, error) {
 		return nil, fmt.Errorf("trivy %s: %w: %s", image, err, tail(stderr.String(), 1500))
 	}
 	return os.ReadFile(out.Name())
+}
+
+// insecure reports whether image is on a plain-HTTP registry.
+func (s Scanner) insecure(image string) bool {
+	ref, err := name.ParseReference(image)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(s.InsecureRegistries, ref.Context().RegistryStr())
 }
 
 func tail(s string, n int) string {

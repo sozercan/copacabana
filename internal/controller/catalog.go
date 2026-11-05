@@ -106,6 +106,11 @@ func (c *Catalog) verify(ctx context.Context, repo, tag, sourceDigest string, so
 		if st.Predicate.Source.Digest != sourceDigest {
 			continue
 		}
+		// Candidates are ordered by tag, which anyone with push access can move. The signed tag must be this
+		// one, or an older signed index re-tagged with a higher revision would be taken as the newest patch.
+		if st.Predicate.Tag != tag {
+			continue
+		}
 		ref, err := patchRefFromStatement(st, pinned, desc.Digest.String(), im.Manifests, sourcePlatforms, c.Config.Platforms)
 		if err != nil {
 			return nil, err

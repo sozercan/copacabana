@@ -2,9 +2,11 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -49,22 +51,26 @@ func (r *MissedSwapReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	r.mu.Lock()
-	if r.seen == nil {
-		r.seen = map[types.UID]bool{}
-	}
-	if r.seen[pod.UID] {
-		r.mu.Unlock()
+	seen := r.seen[pod.UID]
+	r.mu.Unlock()
+	if seen {
 		return ctrl.Result{}, nil
 	}
-	r.seen[pod.UID] = true
-	if len(r.seen) > 50000 {
-		r.seen = map[types.UID]bool{}
-	}
-	r.mu.Unlock()
 
 	var sw v1alpha1.SwapList
 	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: v1alpha1.SwapListName}, &sw); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err // retried; the pod isn't marked seen yet
+		}
+	}
+	r.mu.Lock()
+	if r.seen == nil || len(r.seen) > 50000 {
+		r.seen = map[types.UID]bool{}
+	}
+	r.seen[pod.UID] = true
+	r.mu.Unlock()
+	if sw.Name == "" {
+		return ctrl.Result{}, nil
 	}
 	// A container still runs a source that has a selected patch, under any spelling (tag@digest, short names),
 	// whatever the pod's annotations claim. Containers running a fallback don't count: their entry has no
@@ -75,7 +81,15 @@ func (r *MissedSwapReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 			patched[e.Source] = true
 		}
 	}
+	swapped := swappedImages(pod.Annotations[v1alpha1.AnnotationSwapped])
 	for _, c := range append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+		// Admission swapped this container to what the SwapList maps its original image to. That target can
+		// itself be a key with a patch selected (a tag recovered to its pinned source digest, which another
+		// workload has a patch for), and admission rightly doesn't swap twice. An annotation copied from a stale
+		// template doesn't pass this check: its recorded original doesn't map to the container's image.
+		if orig, ok := swapped[c.Name]; ok && orig != c.Image && sw.Spec.Images[orig] == c.Image {
+			continue
+		}
 		p, err := imageref.Parse(c.Image)
 		if err != nil {
 			continue
@@ -87,4 +101,15 @@ func (r *MissedSwapReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+// swappedImages parses the copa.sh/swapped annotation (name=original,...) into container name -> original image.
+func swappedImages(v string) map[string]string {
+	out := map[string]string{}
+	for _, item := range strings.Split(v, ",") {
+		if name, image, ok := strings.Cut(item, "="); ok {
+			out[name] = image
+		}
+	}
+	return out
 }
