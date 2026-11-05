@@ -1,7 +1,7 @@
 # Validation
 
 Everything here ran on kind (Kubernetes 1.37, three nodes) on a 16-core VM, with the real Copa, rootless BuildKit,
-Trivy 0.76.1, Zot 2.1.23, Argo CD 3.6.0 and Kyverno 1.19.2. Scripts are in `hack/edge/`; the forged-patch tool
+Trivy 0.76.1, Zot 2.1.23, Argo CD 3.6.0, and Gatekeeper 3.23.1 with Ratify 1.4.8 (Kyverno 1.19.2 before it). Scripts are in `hack/edge/`; the forged-patch tool
 is `hack/forge/`. Earlier rounds (forged patches, rollback on readiness failure, mid-rollout changes, tag drift,
 the missed-swap detector, SwapList abuse) are summarized in the README.
 
@@ -40,7 +40,7 @@ it. It runs one replica on a ReadWriteOnce volume here.
 | Copa distros | Debian, Ubuntu, Alpine 3.14 (EOL): promoted. UBI8: verification blocked it (57 new vulnerabilities from packages the update pulled in). Debian buster (EOL), Azure Linux 3, an old distroless digest: Copa failed, gap recorded | |
 | Multi-platform (amd64 + arm64 under qemu) | Pass. arm64 image runs with updated packages | `arm64/v8` never matched `linux/arm64`, so arm64 was dropped silently. SourceImage platforms were frozen at creation. A platform change left an incomplete patch current and never rebuilt |
 | Scale | 30 rollouts in 9m11s; controller 41 MiB | SwapList guard hit the CEL cost limit at 100–250 entries per namespace (now linear; 500 entries fine, ~800 is the object-size ceiling). The restart limit of 2 was exceeded under parallel reconciles (now 2) |
-| Notation + Kyverno | Signed patch admitted; unsigned patch denied whether swapped or referenced directly; source images unaffected; rollout dry run passes through Kyverno | Needed TLS on the registry. Publishing is now atomic: tag written after the attestation and signature |
+| Notation + Gatekeeper/Ratify (`notation-gatekeeper.sh`; replaced the Kyverno check, same results) | Signed patch admitted, and a new namespace rolled out to it through the controller's dry run; unsigned patch denied whether swapped or referenced directly, and a scale-up onto it fails at the ReplicaSet; source images never reach Ratify | Needed TLS on the registry. Publishing is now atomic: tag written after the attestation and signature. `notation cert generate-test` certificates expire after a day and signing then failed, so deploy now makes a longer-lived one with openssl. Gatekeeper's webhook is limited to Pods: with `failurePolicy: Fail` on every resource it blocked Lease renewals and deadlocked the cluster. Ratify's tag-to-digest mutation is off, as Kyverno's was, so tags still reach the swap policy |
 | Leader election, uninstall | Pass on a second cluster | Added leader election and `hack/uninstall.sh` |
 | Consumer cluster | Pass. Second kind cluster in consumer mode used this cluster's patches; no builds, Jobs or signing key there | |
 

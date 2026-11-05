@@ -118,7 +118,7 @@ Demo timings are short (`--healthy-for=30s --soak=2m`); see `config/manager/cont
 | `REPLICAS` | `2` | Controller replicas (leader election) |
 | `SOURCE_AUTH` | | Docker config with registry logins, for example to avoid Docker Hub's anonymous rate limit. Private sources are still skipped |
 | `EXTRA_INSECURE` | | More plain-HTTP source registries |
-| `NOTATION` | `false` | Also sign patched images with Notation (test certificate) for an image integrity policy; see `hack/edge/kyverno-policy.sh` |
+| `NOTATION` | `false` | Also sign patched images with Notation (test certificate) for an image integrity policy; see `hack/edge/gatekeeper-policy.sh` |
 | `IMAGE_REGISTRY`, `IN_CLUSTER_REGISTRY`, `TAG` | `localhost:5001`, `kind-registry:5000`, `dev` | Where the controller and worker images are pushed, the same registry as nodes reach it, and their tag |
 
 ## What was exercised on kind
@@ -170,7 +170,7 @@ ignored silently; the guard only checked a prefix.
 
 A later round covered the in-cluster registry, Docker Hub names, private registries, Argo CD, isolation,
 multi-revision lifecycles, failure injection, other workload kinds, Copa distros, multi-platform builds, scale,
-Notation with Kyverno, leader election, uninstall and a consumer cluster. Results and the bugs it found are in
+Notation with Gatekeeper and Ratify, leader election, uninstall and a consumer cluster. Results and the bugs it found are in
 [docs/validation.md](docs/validation.md).
 
 Unit tests: `make test`.
@@ -178,8 +178,8 @@ Unit tests: `make test`.
 ## Prototype limits
 
 - **Signing:** the controller trusts an ed25519 DSSE attestation (key in a Secret). With `NOTATION=true` the
-  verify Job also signs with Notation using a test certificate, which Kyverno can enforce. Not Notation with a
-  real CA or Key Vault.
+  verify Job also signs with Notation using a test certificate, which Gatekeeper with Ratify (its external data
+  provider) enforces. Not Notation with a real CA or Key Vault.
 - **Registry:** the in-cluster Zot runs one replica on a ReadWriteOnce volume, with a generated CA. Once patches
   roll out it's a runtime dependency for new pods. Old revisions aren't garbage-collected. No workload identity or
   ACR token exchange; accounts are htpasswd.

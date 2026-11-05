@@ -11,7 +11,7 @@
 #                                   can't be read without credentials still aren't patched (see docs/design.md).
 #   EXTRA_INSECURE=host:port,...    more plain-HTTP source registries
 #   NOTATION=true                   also sign patched images with Notation (test certificate in hack/.keys/notation)
-#                                   for an image integrity policy such as hack/edge/kyverno-policy.sh
+#                                   for an image integrity policy such as hack/edge/gatekeeper-policy.sh
 #   MODE=builder|consumer|report-only, PLATFORMS=linux/amd64[,linux/arm64], REPLICAS=2
 #   IMAGE_REGISTRY=localhost:5001, IN_CLUSTER_REGISTRY=kind-registry:5000, TAG=dev
 #                                   where the controller and worker images are pushed and pulled from
@@ -90,8 +90,16 @@ $K apply -f config/manager/namespaces.yaml
 if [ "$MODE" != consumer ]; then   # consumers never sign, so they don't get the key
   notation_files=()
   if [ "${NOTATION:-false}" = true ]; then
-    nk=hack/.keys/notation/notation/localkeys
-    [ -f "$nk/copa-test.key" ] || XDG_CONFIG_HOME=$PWD/hack/.keys/notation notation cert generate-test copa-test >/dev/null
+    # A self-signed code-signing certificate, like `notation cert generate-test` makes, but valid for as long as
+    # the registry CA (generate-test certificates expire after a day, and signing then fails). Regenerated when it
+    # is about to expire; patches signed with the old one then stop verifying.
+    nk=hack/.keys/notation
+    if ! openssl x509 -checkend 86400 -noout -in "$nk/copa-test.crt" >/dev/null 2>&1; then
+      mkdir -p "$nk"
+      printf '[req]\ndistinguished_name=dn\nx509_extensions=ext\n[dn]\n[ext]\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=codeSigning\n' > "$nk/openssl.cnf"
+      openssl req -x509 -newkey rsa:3072 -nodes -days 825 -config "$nk/openssl.cnf" -subj "/O=copa test/CN=copa-test" \
+        -keyout "$nk/copa-test.key" -out "$nk/copa-test.crt" 2>/dev/null
+    fi
     notation_files=(--from-file=notation.key="$nk/copa-test.key" --from-file=notation.crt="$nk/copa-test.crt")
   fi
   $K -n copa-verifier create secret generic copa-signing-key --from-file=signing.key=hack/.keys/signing.key \

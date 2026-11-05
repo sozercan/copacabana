@@ -277,7 +277,7 @@ On the MutatingAdmissionPolicy binding, set `parameterNotFoundAction: Allow`, so
 
 Patched images must come from `patched/*` and carry a valid signature and attestation from the verify identity. Keep the existing signing and image validation rules. The only allowed fallback is the recorded source digest, for a first rollout.
 
-Other admission webhooks can also change pod images. Kyverno may resolve tags to digests, and a registry mirror policy may rewrite hostnames. Test the swap alongside these on the target clusters, and set `reinvocationPolicy: IfNeeded`.
+Other admission webhooks can also change pod images. Policy engines may resolve tags to digests (Ratify's Gatekeeper mutation provider, Kyverno's `mutateDigest`), and a registry mirror policy may rewrite hostnames. Test the swap alongside these on the target clusters, and set `reinvocationPolicy: IfNeeded`.
 
 Agree on the restart annotation with whoever runs the deploy path, whether that's Helm, Argo CD or Flux, and check that their sync leaves it in place. Without that agreement, keep the workload report-only.
 

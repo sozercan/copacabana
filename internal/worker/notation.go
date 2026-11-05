@@ -11,7 +11,7 @@ import (
 )
 
 // NotationSigner signs with the Notation CLI using a key and certificate chain mounted into the verify Job. The
-// signature is what a cluster image integrity policy (Kyverno, Ratify) checks at admission; the DSSE attestation
+// signature is what a cluster image integrity policy (such as Gatekeeper with Ratify) checks at admission; the DSSE attestation
 // remains the controller's own check. insecure lists plain-HTTP registry hosts.
 func NotationSigner(keyPath, certPath string, insecure []string) Signer {
 	return func(ctx context.Context, pinned string) error {
