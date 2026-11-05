@@ -1,0 +1,72 @@
+# Narrows what the controller's cluster-wide RBAC can be used for: it may only touch opted-in namespaces,
+# create pods only as dry runs, and change only pod-template metadata (the restart annotation) on Deployments.
+# A compromised or buggy controller can't edit workloads elsewhere or change what they run.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: copa-controller-scope
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods"]
+    - apiGroups: ["rollout.copa.sh"]
+      apiVersions: ["v1alpha1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["swaplists"]
+  matchConditions:
+  - name: is-controller
+    expression: request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller"
+  validations:
+  - expression: >-
+      namespaceObject.metadata.?labels.orValue({})[?'copa.sh/patching'].orValue('') == 'enabled'
+    message: "the copa controller may only act in namespaces labelled copa.sh/patching=enabled"
+  - expression: "request.resource.resource != 'pods' || request.dryRun == true"
+    message: "the copa controller may only create pods as a dry run"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: copa-controller-scope
+spec:
+  policyName: copa-controller-scope
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: copa-controller-deployments
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["apps"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE", "DELETE"]
+      resources: ["deployments"]
+  matchConditions:
+  - name: is-controller
+    expression: request.userInfo.username == "system:serviceaccount:copa-system:copa-rollout-controller"
+  validations:
+  - expression: >-
+      namespaceObject.metadata.?labels.orValue({})[?'copa.sh/patching'].orValue('') == 'enabled'
+    message: "the copa controller may only act in namespaces labelled copa.sh/patching=enabled"
+  - expression: >-
+      request.operation == 'UPDATE' &&
+        object.spec.template.spec == oldObject.spec.template.spec &&
+        object.spec.template.metadata.?labels == oldObject.spec.template.metadata.?labels &&
+        object.spec.selector == oldObject.spec.selector &&
+        object.spec.?replicas == oldObject.spec.?replicas &&
+        object.spec.?strategy == oldObject.spec.?strategy
+    message: "the copa controller may only change pod-template annotations on Deployments"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: copa-controller-deployments
+spec:
+  policyName: copa-controller-deployments
+  validationActions: [Deny]

@@ -21,11 +21,15 @@ const (
 	verifyServiceAccount = "copa-verify"
 	buildkitConfigMap    = "buildkitd-config"
 	signingKeySecret     = "copa-signing-key"
-	builderPoolLabel     = "copa.sh/pool"
-	builderPoolValue     = "builder"
-	builderTaint         = "copa.sh/builder"
-	workerUID            = 65532
-	buildkitUID          = 1000
+	// registryAuthSecret is an optional dockerconfigjson Secret in the builder and verifier namespaces. Each
+	// namespace holds its own account: builder Jobs can write staging/**, the verify Job can write patched/**.
+	registryAuthSecret = "copa-registry-credentials"
+	caBundleConfigMap  = "copa-ca-bundle"
+	builderPoolLabel   = "copa.sh/pool"
+	builderPoolValue   = "builder"
+	builderTaint       = "copa.sh/builder"
+	workerUID          = 65532
+	buildkitUID        = 1000
 )
 
 func platformSlug(p string) string { return strings.ReplaceAll(p, "/", "-") }
@@ -44,6 +48,10 @@ func (r *PatchBuildReconciler) workerContainer(args []string, extraEnv ...corev1
 		{Name: "COPA_TRIVY_SERVER", Value: r.Config.TrivyServer},
 		{Name: "HOME", Value: "/tmp"},
 		{Name: "TRIVY_CACHE_DIR", Value: "/tmp/trivy"},
+		// Copa, Trivy and go-containerregistry all read registry credentials from $DOCKER_CONFIG/config.json.
+		{Name: "DOCKER_CONFIG", Value: "/docker"},
+		// System roots plus the in-cluster registry's CA (optional ConfigMap; see hack/deploy.sh).
+		{Name: "SSL_CERT_FILE", Value: "/etc/copa-ca/ca-bundle.crt"},
 	}
 	return corev1.Container{
 		Name:                     "worker",
@@ -60,7 +68,12 @@ func (r *PatchBuildReconciler) workerContainer(args []string, extraEnv ...corev1
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
-		VolumeMounts: []corev1.VolumeMount{{Name: "tmp", MountPath: "/tmp"}, {Name: "work", MountPath: "/work"}},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "tmp", MountPath: "/tmp"},
+			{Name: "work", MountPath: "/work"},
+			{Name: "registry-auth", MountPath: "/docker", ReadOnly: true},
+			{Name: "ca-bundle", MountPath: "/etc/copa-ca", ReadOnly: true},
+		},
 	}
 }
 
@@ -88,6 +101,16 @@ func (r *PatchBuildReconciler) baseJob(pb *v1alpha1.PatchBuild, name, namespace,
 					Volumes: []corev1.Volume{
 						{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{Name: "work", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: "registry-auth", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+							SecretName:  registryAuthSecret,
+							Optional:    ptr.To(true),
+							DefaultMode: ptr.To[int32](0o444),
+							Items:       []corev1.KeyToPath{{Key: corev1.DockerConfigJsonKey, Path: "config.json"}},
+						}}},
+						{Name: "ca-bundle", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+							LocalObjectReference: corev1.LocalObjectReference{Name: caBundleConfigMap},
+							Optional:             ptr.To(true),
+						}}},
 					},
 				},
 			},
@@ -113,7 +136,9 @@ func (r *PatchBuildReconciler) scanJob(pb *v1alpha1.PatchBuild, stage, platform,
 func (r *PatchBuildReconciler) buildJob(pb *v1alpha1.PatchBuild, platform, source, reportRef, target string) *batchv1.Job {
 	job := r.baseJob(pb, jobName(pb, "build", platform), r.Config.BuilderNamespace, buildServiceAccount, "build", true)
 	spec := &job.Spec.Template.Spec
-	spec.NodeSelector["kubernetes.io/arch"] = strings.Split(platform, "/")[1]
+	if !r.Config.AllowEmulation {
+		spec.NodeSelector["kubernetes.io/arch"] = strings.Split(platform, "/")[1]
+	}
 	spec.Volumes = append(spec.Volumes,
 		corev1.Volume{Name: "buildkit-run", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		corev1.Volume{Name: "buildkit-state", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},

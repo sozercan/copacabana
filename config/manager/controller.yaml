@@ -5,7 +5,7 @@ metadata:
   namespace: copa-system
   labels: {app: copa-rollout-controller}
 spec:
-  replicas: 1
+  replicas: REPLICAS
   selector:
     matchLabels: {app: copa-rollout-controller}
   template:
@@ -21,10 +21,11 @@ spec:
         image: CONTROLLER_IMAGE
         args:
         - --mode=MODE
-        - --platforms=linux/amd64
-        - --insecure-registries=kind-registry:5000
-        - --patched-prefix=kind-registry:5000/patched
-        - --staging-prefix=kind-registry:5000/staging
+        - --platforms=PLATFORMS
+        - --allow-emulation=ALLOW_EMULATION
+        - --insecure-registries=INSECURE_REGISTRIES
+        - --patched-prefix=REGISTRY_HOST/patched
+        - --staging-prefix=REGISTRY_HOST/staging
         - --worker-image=WORKER_IMAGE
         - --buildkit-image=moby/buildkit:v0.33.0-rootless
         - --trivy-server=http://trivy-server.copa-builder:4954
@@ -36,6 +37,11 @@ spec:
         - --healthy-for=30s
         - --soak=2m
         - --max-concurrent-restarts=2
+        env:
+        # Credentials for private source registries (optional Secret copa-registry-credentials, see SOURCE_AUTH).
+        - {name: DOCKER_CONFIG, value: /docker}
+        # System roots plus the in-cluster registry's CA.
+        - {name: SSL_CERT_FILE, value: /etc/copa-ca/ca-bundle.crt}
         ports:
         - {name: metrics, containerPort: 8080}
         readinessProbe:
@@ -51,6 +57,15 @@ spec:
           limits: {memory: 256Mi}
         volumeMounts:
         - {name: pubkey, mountPath: /keys, readOnly: true}
+        - {name: registry-auth, mountPath: /docker, readOnly: true}
+        - {name: ca-bundle, mountPath: /etc/copa-ca, readOnly: true}
       volumes:
+      - name: ca-bundle
+        configMap: {name: copa-ca-bundle}
+      - name: registry-auth
+        secret:
+          secretName: copa-registry-credentials
+          optional: true
+          items: [{key: .dockerconfigjson, path: config.json}]
       - name: pubkey
         secret: {secretName: copa-attestation-pubkey}

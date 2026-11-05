@@ -79,8 +79,9 @@ internal/worker/       scan, build and verify steps
 internal/attest/       in-toto statement, DSSE ed25519 sign/verify
 internal/registry/     go-containerregistry helpers: resolve, tags, artifacts with subjects, referrers
 internal/imageref/     normalization, aliases, floating-tag detection
-config/                CRDs, RBAC, admission policies, builder namespace, controller Deployment
-hack/                  kind-up.sh, deploy.sh, demo.sh, kubectl-copa plugin; edge/ scenarios; forge/ forged patches
+config/                CRDs, RBAC, admission policies, builder namespace, in-cluster registry, controller
+hack/                  kind-up.sh, deploy.sh, demo.sh, uninstall.sh, kubectl-copa plugin; edge/ scenarios;
+                       forge/ forged patches
 ```
 
 ## Run it
@@ -90,7 +91,7 @@ Needs Docker, kind, kubectl, crane and Go. `COPA_SRC` must point at a Copa check
 
 ```sh
 make kind      # kind cluster (Kubernetes 1.37) + local registry kind-registry:5000 / localhost:5001
-make deploy    # build and push images, generate signing key, install everything (MODE=builder by default)
+make deploy    # build and push images, generate keys, install everything (in-cluster registry, builder mode)
 make demo      # demo-dev (automatic approval) and demo-prod (manual approval) running nginx:1.25.3-alpine
 
 kubectl get sourceimages
@@ -99,9 +100,25 @@ kubectl get patchrollouts -A
 PATH=$PWD/hack:$PATH kubectl copa approve -n demo-prod --all
 kubectl -n demo-dev annotate deploy web copa.sh/fail-rollout=true     # team back-out
 kubectl annotate sourceimage <name> copa.sh/rebuild=now               # rescan now
+kubectl annotate sourceimage <name> copa.sh/rebuild=force             # new revision even without new fixes
+KCTX=kind-copa RESTART=true hack/uninstall.sh                         # remove copa, moving workloads back to sources
 ```
 
 Demo timings are short (`--healthy-for=30s --soak=2m`); see `config/manager/controller.yaml`.
+
+`hack/deploy.sh` options (environment variables):
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `REGISTRY` | `in-cluster` | `in-cluster`: staging and patched images in a Zot registry inside the cluster, over TLS, with separate push accounts for builders and the verifier. `external`: the host's `kind-registry` (no auth, plain HTTP) |
+| `REGISTRY_REMOTE` | | `ip:port` of another cluster's registry NodePort, for consumer clusters |
+| `MODE` | `builder` | `builder`, `consumer` or `report-only` |
+| `PLATFORMS` | `linux/amd64` | Platforms every patch must cover |
+| `ALLOW_EMULATION` | `false` | Build platforms without matching nodes under qemu |
+| `REPLICAS` | `2` | Controller replicas (leader election) |
+| `SOURCE_AUTH` | | Docker config with logins for private source registries or Docker Hub |
+| `EXTRA_INSECURE` | | More plain-HTTP source registries |
+| `NOTATION` | `false` | Also sign patched images with Notation (test certificate) for an image integrity policy; see `hack/edge/kyverno-policy.sh` |
 
 ## What was exercised on kind
 
@@ -150,26 +167,32 @@ ignored untracked Deployments; admission reinvocation chained swaps (tag -> pinn
 patch), defeating recovery; a scan with no OS reported "no fixable vulnerabilities"; forged newer revisions were
 ignored silently; the guard only checked a prefix.
 
+A later round covered the in-cluster registry, Docker Hub names, private registries, Argo CD, isolation,
+multi-revision lifecycles, failure injection, other workload kinds, Copa distros, multi-platform builds, scale,
+Notation with Kyverno, leader election, uninstall and a consumer cluster. Results and the bugs it found are in
+[docs/validation.md](docs/validation.md).
+
 Unit tests: `make test`.
 
 ## Prototype limits
 
-- **Signing:** ed25519 DSSE with a key in a Secret, not Notation with Key Vault. The cluster's image integrity
-  policy doesn't check the signature; only the controller does.
-- **Registry auth:** the local registry has no auth. There's no workload identity or ACR token exchange, so the
-  per-step registry permissions (`staging/*` vs `patched/*`) are documented, not enforced.
-- **RBAC:** cluster-wide for Deployments and pods (including pod `create`, needed for the dry run). The design
-  binds these per opted-in namespace.
-- **Policy:** configured with controller flags. There is no `PatchPolicy` resource yet. The patched prefix in
-  the SwapList guard is hard-coded to `kind-registry:5000/patched/`.
-- **NetworkPolicy:** job pods can reach anything outside the pod and service CIDRs, which on kind includes the
-  nodes.
-- **Not exercised:** consumer mode against a second cluster (it ran against the same registry), multi-platform
-  sources, restoring a previous patch rather than the pinned source. There are no envtest tests.
+- **Signing:** the controller trusts an ed25519 DSSE attestation (key in a Secret). With `NOTATION=true` the
+  verify Job also signs with Notation using a test certificate, which Kyverno can enforce. Not Notation with a
+  real CA or Key Vault.
+- **Registry:** the in-cluster Zot runs one replica on a ReadWriteOnce volume, with a generated CA. Once patches
+  roll out it's a runtime dependency for new pods. Old revisions aren't garbage-collected. No workload identity or
+  ACR token exchange; accounts are htpasswd.
+- **RBAC:** cluster-wide for Deployments and pods (pod `create` is needed for the dry run), narrowed by two
+  ValidatingAdmissionPolicies to opted-in namespaces, dry-run pods and pod-template annotation changes. Not bound
+  per namespace.
+- **Policy:** configured with controller flags. There is no `PatchPolicy` resource yet.
+- **NetworkPolicy:** job pods can reach the internet but not team pods or nodes. Under kindnet the API server
+  stays reachable; job pods carry no token.
 - **Rollouts are per reference, not per digest:** a tag and a digest reference to the same source roll out and
   back out separately. A pod that already carries a `copa.sh/swapped` annotation isn't swapped again (that's what
-  stops chained swaps), so a template copied from a running pod opts itself out silently.
-- **Rollout scope:** Deployments only. Ineligible Deployments aren't restarted, but admission still swaps their
-  new pods, as in the design.
+  stops chained swaps); the missed-swap detector flags it.
+- **Rollout scope:** only Deployments are restarted. StatefulSets and DaemonSets are listed as not restarted and
+  get the patch when their pods are recreated. Ineligible Deployments aren't restarted either.
+- **Not exercised:** 24-hour soaks, real arm64 nodes, Flux, CRD version conversion, envtest.
 - **Patched repo naming** includes the source registry host (`patched/kind-registry-5000/library/nginx`) so
   sources from different registries can't collide.

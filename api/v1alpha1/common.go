@@ -72,6 +72,9 @@ type PatchRef struct {
 
 // WorkloadRef points at a workload that uses a source image.
 type WorkloadRef struct {
+	// Kind is Deployment, StatefulSet, DaemonSet or CronJob. Empty means Deployment.
+	// +optional
+	Kind      string `json:"kind,omitempty"`
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`
 	// Reference is the image string as the template writes it.

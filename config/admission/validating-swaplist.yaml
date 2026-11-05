@@ -14,7 +14,7 @@ spec:
       resources: ["swaplists"]
   variables:
   - name: patchedPrefix
-    expression: "'kind-registry:5000/patched/'"
+    expression: "'REGISTRY_HOST/patched/'"
   # A digest-pinned reference under the patched prefix, with a well-formed repository path (no "..", no tags).
   - name: patchedRef
     expression: >-
@@ -36,10 +36,13 @@ spec:
         (!has(e.selected) || e.selected.ref.matches(variables.patchedRef)) &&
         (!has(e.previous) || e.previous.ref.matches(variables.patchedRef)))
     message: "selected and previous patches must be digest-pinned images under the patched prefix, and the fallback must pin the source digest"
+  # Linear in the number of aliases (a nested images-by-entries check exceeds the CEL cost budget at ~150
+  # entries): every alias maps to its entry's target, and there are exactly as many keys as aliases, so no key
+  # exists that isn't some entry's alias.
   - expression: >-
-      variables.images.all(k, variables.entries.exists(e,
-        (k == e.source || (has(e.aliases) && k in e.aliases)) &&
-        variables.images[k] == (has(e.selected) ? e.selected.ref : e.fallback)))
+      variables.images.size() == variables.entries.map(e, e.?aliases.orValue([]).size()).sum() &&
+      variables.entries.all(e, e.?aliases.orValue([]).all(a,
+        variables.images[?a].orValue('') == (has(e.selected) ? e.selected.ref : e.fallback)))
     message: "every swap must be an alias of an entry and point at that entry's selected patch or its pinned fallback"
 ---
 apiVersion: admissionregistration.k8s.io/v1

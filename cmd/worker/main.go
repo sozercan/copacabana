@@ -134,6 +134,8 @@ func runVerify(ctx context.Context, args []string) (any, error) {
 	c.register(fs)
 	specJSON := fs.String("spec", os.Getenv("COPA_VERIFY_SPEC"), "verify spec as JSON")
 	keyPath := fs.String("key", "/keys/signing.key", "ed25519 signing key (PEM)")
+	notationKey := fs.String("notation-key", "/keys/notation.key", "Notation signing key; signing is skipped if it's missing")
+	notationCert := fs.String("notation-cert", "/keys/notation.crt", "Notation certificate chain for --notation-key")
 	_ = fs.Parse(args)
 	var spec worker.VerifySpec
 	if err := json.Unmarshal([]byte(*specJSON), &spec); err != nil {
@@ -147,7 +149,11 @@ func runVerify(ctx context.Context, args []string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return worker.Verify(ctx, c.registry(), c.scanner(), spec, key)
+	var sign worker.Signer
+	if _, err := os.Stat(*notationKey); err == nil {
+		sign = worker.NotationSigner(*notationKey, *notationCert, strings.Split(os.Getenv("COPA_INSECURE_REGISTRIES"), ","))
+	}
+	return worker.Verify(ctx, c.registry(), c.scanner(), spec, key, sign)
 }
 
 func runKeygen(args []string) error {

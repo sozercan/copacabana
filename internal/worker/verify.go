@@ -31,7 +31,11 @@ var labelsCopaMayChange = []string{"BaseImage"}
 // Verify checks every staged platform image against its source, assembles an index of the patched
 // platforms, pushes it to the patched repository with a signed attestation, and returns the result.
 // It never runs the images it checks.
-func Verify(ctx context.Context, reg *registry.Client, sc trivy.Scanner, spec VerifySpec, key ed25519.PrivateKey) (*VerifyResult, error) {
+// Signer adds a signature to a pinned patched index before it's tagged, such as a Notation signature for the
+// cluster's image integrity policy. It may be nil.
+type Signer func(ctx context.Context, pinned string) error
+
+func Verify(ctx context.Context, reg *registry.Client, sc trivy.Scanner, spec VerifySpec, key ed25519.PrivateKey, sign Signer) (*VerifyResult, error) {
 	if len(spec.Platforms) == 0 {
 		return nil, fmt.Errorf("nothing to verify")
 	}
@@ -83,12 +87,14 @@ func Verify(ctx context.Context, reg *registry.Client, sc trivy.Scanner, spec Ve
 	if !ok {
 		return nil, fmt.Errorf("annotating index")
 	}
-	if err := reg.WriteIndex(ctx, spec.PatchedRepository+":"+tag, annotated); err != nil {
-		return nil, fmt.Errorf("writing patched index: %w", err)
-	}
 	digest, err := annotated.Digest()
 	if err != nil {
 		return nil, err
+	}
+	// Publish by digest first. The catalog only looks at tags, so nothing sees this revision until the
+	// attestation and signatures are attached and the tag is written last.
+	if err := reg.WriteIndex(ctx, spec.PatchedRepository+"@"+digest.String(), annotated); err != nil {
+		return nil, fmt.Errorf("writing patched index: %w", err)
 	}
 	size, err := annotated.Size()
 	if err != nil {
@@ -140,6 +146,15 @@ func Verify(ctx context.Context, reg *registry.Client, sc trivy.Scanner, spec Ve
 	if _, err := reg.PushArtifact(ctx, spec.PatchedRepository, registry.ArtifactTypeAttestation, registry.MediaTypeDSSE, env,
 		&v1.Descriptor{MediaType: types.OCIImageIndex, Digest: digest, Size: size}, nil, ""); err != nil {
 		return nil, fmt.Errorf("attaching attestation: %w", err)
+	}
+	pinned := spec.PatchedRepository + "@" + digest.String()
+	if sign != nil {
+		if err := sign(ctx, pinned); err != nil {
+			return nil, fmt.Errorf("signing %s: %w", pinned, err)
+		}
+	}
+	if err := reg.WriteIndex(ctx, spec.PatchedRepository+":"+tag, annotated); err != nil {
+		return nil, fmt.Errorf("tagging patched index: %w", err)
 	}
 
 	result.Ref = spec.PatchedRepository + "@" + digest.String()

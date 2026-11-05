@@ -147,6 +147,10 @@ spec:
                         controller's restart. A higher generation means a team deployed.
                       format: int64
                       type: integer
+                    kind:
+                      description: Kind is Deployment unless set. Only Deployments
+                        are restarted; other kinds are listed as Ineligible.
+                      type: string
                     message:
                       type: string
                     name:
@@ -168,6 +172,11 @@ spec:
                     restartedAt:
                       description: RestartedAt is the value the controller set on
                         the restart annotation.
+                      type: string
+                    templateHash:
+                      description: |-
+                        TemplateHash is a hash of the pod template after the controller's restart. A different template means a
+                        team deployed; scaling (an HPA changing replicas) changes the generation but not the template.
                       type: string
                     uid:
                       type: string

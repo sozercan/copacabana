@@ -43,7 +43,7 @@ type PatchBuildSpec struct {
 	// ScanOnly stops after scanning the source. Used in report-only mode.
 	// +optional
 	ScanOnly bool `json:"scanOnly,omitempty"`
-	// Reason the build was started: NewSource, Rescan or Manual.
+	// Reason the build was started: NewSource, Rescan, Manual, Forced or PlatformsChanged.
 	// +optional
 	Reason string `json:"reason,omitempty"`
 }

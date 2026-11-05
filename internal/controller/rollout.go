@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +32,9 @@ type RolloutReconciler struct {
 	client.Client
 	Config   *Config
 	Recorder events.EventRecorder
+
+	mu       sync.Mutex
+	reserved map[string]time.Time // restart slots taken but maybe not yet visible in the cache, by workload UID
 }
 
 // SetupWithManager registers the reconciler.
@@ -183,6 +187,9 @@ func (r *RolloutReconciler) step(ctx context.Context, ro *v1alpha1.PatchRollout)
 		if err := r.discover(ctx, ro); err != nil {
 			return ctrl.Result{}, err
 		}
+		if err := r.refreshAliases(ctx, ro); err != nil {
+			return ctrl.Result{}, err
+		}
 		done, failed, err := r.progress(ctx, ro, r.candidateTarget(ro))
 		if err != nil {
 			return ctrl.Result{}, err
@@ -247,6 +254,21 @@ func (r *RolloutReconciler) discover(ctx context.Context, ro *v1alpha1.PatchRoll
 	tracked := map[string]bool{}
 	for _, w := range ro.Status.Workloads {
 		tracked[w.UID] = true
+	}
+	// Other kinds are listed so the rollout says what it didn't restart. Admission swaps their pods when they next
+	// restart, and the missed-swap detector covers pods that slip through.
+	templates, err := optedInTemplates(ctx, r.Client, ro.Namespace)
+	if err != nil {
+		return err
+	}
+	for _, t := range templates {
+		if t.kind == "Deployment" || t.kind == "CronJob" || tracked[string(t.obj.GetUID())] || !usesSource(t.spec, ro.Spec.Source) {
+			continue
+		}
+		ro.Status.Workloads = append(ro.Status.Workloads, v1alpha1.RolloutWorkload{
+			Kind: t.kind, Name: t.obj.GetName(), UID: string(t.obj.GetUID()), Phase: v1alpha1.WorkloadIneligible,
+			Message: t.kind + "s aren't restarted; admission applies the patch when its pods are next recreated",
+		})
 	}
 	for i := range deps.Items {
 		d := &deps.Items[i]
@@ -346,7 +368,9 @@ func (r *RolloutReconciler) selectCandidate(ctx context.Context, ro *v1alpha1.Pa
 	}
 	cand := ro.Spec.Candidate
 	e.Selected = &cand
-	e.Aliases = imageref.Aliases(p)
+	if e.Aliases, err = r.aliases(ctx, ro.Namespace, p); err != nil {
+		return err
+	}
 	e.SourceDigest = ro.Spec.SourceDigest
 	e.Fallback = p.Repository + "@" + ro.Spec.SourceDigest
 	e.Rollout = ro.Name
@@ -398,6 +422,57 @@ func (r *RolloutReconciler) startRecovery(ctx context.Context, ro *v1alpha1.Patc
 	ro.Status.Phase = v1alpha1.RolloutRollingBack
 	ro.Status.Message = reason
 	return ctrl.Result{Requeue: true}, nil
+}
+
+// aliases returns every spelling admission must match for a source: the standard forms (Docker Hub short
+// names and so on) plus the exact strings the namespace's Deployments use, such as tag@digest.
+func (r *RolloutReconciler) aliases(ctx context.Context, ns string, source imageref.Parsed) ([]string, error) {
+	out := imageref.Aliases(source)
+	var deps appsv1.DeploymentList
+	if err := r.List(ctx, &deps, client.InNamespace(ns)); err != nil {
+		return nil, err
+	}
+	for i := range deps.Items {
+		for _, img := range templateImages(&deps.Items[i].Spec.Template.Spec) {
+			if p, err := imageref.Parse(img); err == nil && p.Canonical() == source.Canonical() && !slices.Contains(out, img) {
+				out = append(out, img)
+			}
+		}
+	}
+	return out, nil
+}
+
+// refreshAliases adds spellings that Deployments created since selection use, while this rollout owns the entry.
+func (r *RolloutReconciler) refreshAliases(ctx context.Context, ro *v1alpha1.PatchRollout) error {
+	sw, exists, err := r.getSwapList(ctx, ro.Namespace)
+	if err != nil || !exists {
+		return err
+	}
+	e := sw.Entry(ro.Spec.Source)
+	if e == nil || e.Rollout != ro.Name {
+		return nil
+	}
+	p, err := imageref.Parse(ro.Spec.Source)
+	if err != nil {
+		return err
+	}
+	want, err := r.aliases(ctx, ro.Namespace, p)
+	if err != nil {
+		return err
+	}
+	if slices.Equal(want, e.Aliases) {
+		return nil
+	}
+	e.Aliases = want
+	return r.saveSwapList(ctx, sw, exists)
+}
+
+// teamDeployed reports whether a Deployment's pod template changed since the controller restarted it.
+func teamDeployed(d *appsv1.Deployment, w *v1alpha1.RolloutWorkload) bool {
+	if w.TemplateHash == "" {
+		return d.Generation != w.Generation // recorded before template hashes existed
+	}
+	return templateHash(d) != w.TemplateHash
 }
 
 // runsDigest reports whether any pod of a Deployment was admitted with an image pinned to digest.
@@ -538,10 +613,6 @@ func (r *RolloutReconciler) progress(ctx context.Context, ro *v1alpha1.PatchRoll
 	if want.ref == "" {
 		return false, "", fmt.Errorf("no target image for %s", ro.Spec.Source)
 	}
-	inflight, err := r.inflightRestarts(ctx)
-	if err != nil {
-		return false, "", err
-	}
 	done := true
 	for i := range ro.Status.Workloads {
 		w := &ro.Status.Workloads[i]
@@ -568,7 +639,11 @@ func (r *RolloutReconciler) progress(ctx context.Context, ro *v1alpha1.PatchRoll
 		}
 
 		if w.Phase == v1alpha1.WorkloadPending {
-			if inflight >= r.Config.MaxConcurrentRestarts {
+			ok, err := r.reserveRestart(ctx, w.UID)
+			if err != nil {
+				return false, "", err
+			}
+			if !ok {
 				done = false
 				w.Message = "waiting for a restart slot"
 				continue
@@ -583,13 +658,14 @@ func (r *RolloutReconciler) progress(ctx context.Context, ro *v1alpha1.PatchRoll
 				return false, "", err
 			}
 			w.Phase, w.RestartedAt, w.Generation, w.Message = v1alpha1.WorkloadRestarting, restartedAt, d.Generation, "restarting"
-			inflight++
+			w.TemplateHash = templateHash(&d)
 			done = false
 			continue
 		}
 
-		// Restarting: a newer generation than ours means a team deployed. Don't fight it.
-		if d.Generation != w.Generation {
+		// Restarting: a different pod template than ours means a team deployed. Don't fight it. Scaling (an HPA
+		// changing replicas) bumps the generation but keeps the template, so it doesn't count.
+		if teamDeployed(&d, w) {
 			w.Phase, w.Message = v1alpha1.WorkloadSuperseded, "team deployed during the rollout"
 			continue
 		}
@@ -637,21 +713,39 @@ func shortRef(ref string) string {
 	return ref
 }
 
-// inflightRestarts counts workloads restarting across every rollout in the cluster.
-func (r *RolloutReconciler) inflightRestarts(ctx context.Context) (int, error) {
+// reserveRestart takes one of the cluster-wide restart slots for a workload. Rollouts reconcile in parallel and
+// the cache shows another rollout's restart only after its status is written, so slots handed out but not yet
+// visible are held in memory until the cache catches up (or for two minutes, if the status write failed).
+func (r *RolloutReconciler) reserveRestart(ctx context.Context, uid string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var all v1alpha1.PatchRolloutList
 	if err := r.List(ctx, &all); err != nil {
-		return 0, err
+		return false, err
 	}
-	n := 0
+	busy := map[string]bool{}
 	for _, ro := range all.Items {
 		for _, w := range ro.Status.Workloads {
 			if w.Phase == v1alpha1.WorkloadRestarting {
-				n++
+				busy[w.UID] = true
 			}
 		}
 	}
-	return n, nil
+	if r.reserved == nil {
+		r.reserved = map[string]time.Time{}
+	}
+	for u, at := range r.reserved {
+		if busy[u] || time.Since(at) > 2*time.Minute {
+			delete(r.reserved, u)
+			continue
+		}
+		busy[u] = true
+	}
+	if len(busy) >= r.Config.MaxConcurrentRestarts {
+		return false, nil
+	}
+	r.reserved[uid] = time.Now()
+	return true, nil
 }
 
 func deadlineExceeded(d *appsv1.Deployment) bool {
@@ -734,7 +828,7 @@ func (r *RolloutReconciler) soakCheck(ctx context.Context, ro *v1alpha1.PatchRol
 			}
 			return "", err
 		}
-		if d.Generation != w.Generation {
+		if teamDeployed(&d, &w) {
 			continue // team deployed; their new pods are checked by admission and the next rollout
 		}
 		if d.Status.AvailableReplicas < ptr.Deref(d.Spec.Replicas, 1) {

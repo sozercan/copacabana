@@ -46,11 +46,18 @@ const (
 
 // RolloutWorkload tracks one Deployment in a rollout.
 type RolloutWorkload struct {
+	// Kind is Deployment unless set. Only Deployments are restarted; other kinds are listed as Ineligible.
+	// +optional
+	Kind string `json:"kind,omitempty"`
 	Name string `json:"name"`
 	UID  string `json:"uid"`
 	// Generation is the Deployment generation after the controller's restart. A higher generation means a team deployed.
 	// +optional
 	Generation int64 `json:"generation,omitempty"`
+	// TemplateHash is a hash of the pod template after the controller's restart. A different template means a
+	// team deployed; scaling (an HPA changing replicas) changes the generation but not the template.
+	// +optional
+	TemplateHash string `json:"templateHash,omitempty"`
 	// RestartedAt is the value the controller set on the restart annotation.
 	// +optional
 	RestartedAt string `json:"restartedAt,omitempty"`

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -51,7 +53,7 @@ type cachedResolve struct {
 	err error
 }
 
-// SetupWithManager registers the reconciler. Every Deployment or Namespace change triggers one inventory pass.
+// SetupWithManager registers the reconciler. Every workload or Namespace change triggers one inventory pass.
 func (r *InventoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	toInventory := handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
 		return []reconcile.Request{inventoryKey}
@@ -59,6 +61,9 @@ func (r *InventoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("inventory").
 		Watches(&appsv1.Deployment{}, toInventory).
+		Watches(&appsv1.StatefulSet{}, toInventory).
+		Watches(&appsv1.DaemonSet{}, toInventory).
+		Watches(&batchv1.CronJob{}, toInventory).
 		Watches(&corev1.Namespace{}, toInventory).
 		WithOptions(controllerOptions(1)).
 		Complete(r)
@@ -67,6 +72,7 @@ func (r *InventoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 type usage struct {
 	parsed    imageref.Parsed
 	workloads []v1alpha1.WorkloadRef
+	objs      []client.Object
 }
 
 // Reconcile rebuilds the inventory.
@@ -81,19 +87,15 @@ func (r *InventoryReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 	// canonical reference -> usage
 	uses := map[string]*usage{}
 	for _, ns := range nsList.Items {
-		var deps appsv1.DeploymentList
-		if err := r.List(ctx, &deps, client.InNamespace(ns.Name)); err != nil {
+		templates, err := optedInTemplates(ctx, r.Client, ns.Name)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		for i := range deps.Items {
-			d := &deps.Items[i]
-			if d.Spec.Template.Labels[v1alpha1.LabelWorkloadOptIn] != v1alpha1.OptInValue {
-				continue
-			}
-			for _, img := range templateImages(&d.Spec.Template.Spec) {
+		for _, t := range templates {
+			for _, img := range templateImages(t.spec) {
 				p, err := imageref.Parse(img)
 				if err != nil {
-					r.Recorder.Eventf(d, nil, corev1.EventTypeWarning, "InvalidImage", "Inventory", "%v", err)
+					r.Recorder.Eventf(t.obj, nil, corev1.EventTypeWarning, "InvalidImage", "Inventory", "%v", err)
 					continue
 				}
 				key := p.Canonical()
@@ -102,7 +104,12 @@ func (r *InventoryReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 					u = &usage{parsed: p}
 					uses[key] = u
 				}
-				u.workloads = append(u.workloads, v1alpha1.WorkloadRef{Namespace: d.Namespace, Name: d.Name, Reference: img})
+				kind := t.kind
+				if kind == "Deployment" {
+					kind = ""
+				}
+				u.workloads = append(u.workloads, v1alpha1.WorkloadRef{Kind: kind, Namespace: ns.Name, Name: t.obj.GetName(), Reference: img})
+				u.objs = append(u.objs, t.obj)
 			}
 		}
 	}
@@ -120,6 +127,12 @@ func (r *InventoryReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 		res, err := r.resolve(ctx, key)
 		if err != nil {
 			log.Info("can't resolve image", "reference", key, "error", err.Error())
+			// Tell the team: an image the controller can't read (private registry without credentials, rate
+			// limit, typo) is never patched, and nothing else would say so.
+			for _, o := range u.objs {
+				r.Recorder.Eventf(o, nil, corev1.EventTypeWarning, "ImageNotResolved", "Inventory",
+					"%s can't be resolved, so it won't be patched: %v", key, err)
+			}
 			continue
 		}
 		gk := u.parsed.Repository + "@" + res.Digest
@@ -158,6 +171,16 @@ func (r *InventoryReconciler) Reconcile(ctx context.Context, _ reconcile.Request
 		} else if err != nil {
 			errs = append(errs, err)
 			continue
+		} else if !equality.Semantic.DeepEqual(si.Spec.Platforms, g.res.Platforms) {
+			// The configured platforms changed (or the source gained or lost one): builds and the catalog's
+			// coverage check both follow spec.platforms, so keep it current.
+			sp := client.MergeFrom(si.DeepCopy())
+			si.Spec.Platforms = g.res.Platforms
+			if err := r.Patch(ctx, &si, sp); err != nil {
+				errs = append(errs, fmt.Errorf("updating platforms of SourceImage %s: %w", name, err))
+				continue
+			}
+			log.Info("source platforms changed", "name", name, "platforms", g.res.Platforms)
 		}
 		sort.Strings(g.refs)
 		sort.Strings(g.floating)

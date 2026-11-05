@@ -125,7 +125,8 @@ spec:
                   type: object
                 type: array
               reason:
-                description: 'Reason the build was started: NewSource, Rescan or Manual.'
+                description: 'Reason the build was started: NewSource, Rescan, Manual,
+                  Forced or PlatformsChanged.'
                 type: string
               reference:
                 description: Reference is the tag reference used to name the patched

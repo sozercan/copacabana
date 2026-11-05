@@ -2,6 +2,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"sync"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -11,10 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/imageref"
 )
 
 const candidateDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -128,5 +133,65 @@ func TestRunsDigest(t *testing.T) {
 	}
 	if ok, err := r.runsDigest(ctx, "team", "missing", candidateDigest); err != nil || ok {
 		t.Fatalf("missing deployment: got %v %v", ok, err)
+	}
+}
+
+// Admission matches exact strings, so the spelling a Deployment uses (here tag@digest) must be an alias.
+func TestAliasesIncludeWorkloadSpellings(t *testing.T) {
+	ctx := context.Background()
+	d := optedIn("web", "u1")
+	raw := "nginx:1.25.4-alpine@" + candidateDigest
+	d.Spec.Template.Spec.Containers[0].Image = raw
+	r := newRolloutReconciler(t, d)
+	p, err := imageref.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.aliases(ctx, "team", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, raw) || !slices.Contains(got, "nginx@"+candidateDigest) {
+		t.Fatalf("aliases %v must include %q and the short digest form", got, raw)
+	}
+}
+
+// Scaling changes the generation but not the template, so it isn't a team deploy. A template change is.
+func TestTeamDeployedIgnoresScaling(t *testing.T) {
+	d := optedIn("web", "u1")
+	d.Generation = 3
+	w := &v1alpha1.RolloutWorkload{Generation: 3, TemplateHash: templateHash(d)}
+	d.Generation, d.Spec.Replicas = 4, ptr.To[int32](5)
+	if teamDeployed(d, w) {
+		t.Fatal("scaling counted as a team deploy")
+	}
+	d.Spec.Template.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "X", Value: "1"}}
+	if !teamDeployed(d, w) {
+		t.Fatal("template change not detected")
+	}
+}
+
+// Parallel reconciles must not hand out more restart slots than the limit, even before statuses are written.
+func TestReserveRestartLimit(t *testing.T) {
+	r := newRolloutReconciler(t)
+	r.Config.MaxConcurrentRestarts = 2
+	ctx := context.Background()
+	got := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ok, err := r.reserveRestart(ctx, fmt.Sprintf("u%d", i)); err == nil && ok {
+				mu.Lock()
+				got++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if got != 2 {
+		t.Fatalf("granted %d restart slots, want 2", got)
 	}
 }

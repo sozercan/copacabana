@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/sozercan/copacabana/api/v1alpha1"
+	"github.com/sozercan/copacabana/internal/imageref"
 )
 
 // MissedSwapReconciler flags opted-in pods that ask for a swappable image but weren't swapped.
@@ -65,8 +66,21 @@ func (r *MissedSwapReconciler) Reconcile(ctx context.Context, req reconcile.Requ
 	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: v1alpha1.SwapListName}, &sw); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	// A container still runs a source that has a selected patch, under any spelling (tag@digest, short names),
+	// whatever the pod's annotations claim. Containers running a fallback don't count: their entry has no
+	// selected patch, or the fallback pins a digest that isn't the entry's source reference.
+	patched := map[string]bool{}
+	for _, e := range sw.Spec.Entries {
+		if e.Selected != nil {
+			patched[e.Source] = true
+		}
+	}
 	for _, c := range append(append([]corev1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
-		if _, ok := sw.Spec.Images[c.Image]; ok {
+		p, err := imageref.Parse(c.Image)
+		if err != nil {
+			continue
+		}
+		if _, isKey := sw.Spec.Images[c.Image]; patched[p.Canonical()] || isKey && sw.Spec.Images[c.Image] != c.Image {
 			missedSwaps.WithLabelValues(pod.Namespace).Inc()
 			r.Recorder.Eventf(&pod, nil, corev1.EventTypeWarning, "MissedSwap", "Admission",
 				"container %s runs %s, which has an approved patch, but admission didn't swap it", c.Name, c.Image)

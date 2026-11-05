@@ -14,6 +14,9 @@ rules:
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "watch", "patch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch", "create"]
@@ -21,7 +24,7 @@ rules:
   resources: ["namespaces"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["batch"]
-  resources: ["jobs"]
+  resources: ["jobs", "cronjobs"]
   verbs: ["get", "list", "watch"]
 - apiGroups: ["events.k8s.io"]
   resources: ["events"]
@@ -95,3 +98,18 @@ rules:
 - apiGroups: ["rollout.copa.sh"]
   resources: ["patchrollouts", "swaplists"]
   verbs: ["get", "list", "watch"]
+---
+# Leader election between controller replicas.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: copa-rollout-controller-leader, namespace: copa-system}
+rules:
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: copa-rollout-controller-leader, namespace: copa-system}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: copa-rollout-controller-leader}
+subjects: [{kind: ServiceAccount, name: copa-rollout-controller, namespace: copa-system}]

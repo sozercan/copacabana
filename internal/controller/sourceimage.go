@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,7 +25,8 @@ import (
 	"github.com/sozercan/copacabana/internal/imageref"
 )
 
-// AnnotationRebuild on a SourceImage asks for an immediate rescan and rebuild.
+// AnnotationRebuild on a SourceImage asks for an immediate rescan and rebuild. The value "force" builds a new
+// revision even when the current patch has no new fixes (after a Copa upgrade or a signing-key rotation, say).
 const AnnotationRebuild = "copa.sh/rebuild"
 
 // LabelSource holds a hash of the canonical source reference on PatchRollouts.
@@ -99,6 +101,12 @@ func (r *SourceImageReconciler) Reconcile(ctx context.Context, req reconcile.Req
 	}
 	if ref != nil {
 		si.Status.Current = ref
+	} else if si.Status.Current != nil && !coversPlatforms(si.Status.Current, si.Spec.Platforms) {
+		// The current patch no longer covers every platform the cluster runs: its index has no manifest for
+		// the new platform, so pods scheduled there couldn't pull it. Stop offering it to new rollouts.
+		r.Recorder.Eventf(&si, nil, corev1.EventTypeWarning, "PatchIncomplete", "Catalog",
+			"%s doesn't cover %v; rebuilding", si.Status.Current.Tag, platformNames(si.Spec.Platforms))
+		si.Status.Current = nil
 	}
 
 	building := false
@@ -160,6 +168,7 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 	sort.Slice(mine, func(i, j int) bool { return mine[i].CreationTimestamp.After(mine[j].CreationTimestamp.Time) })
 
 	rebuild := si.Annotations[AnnotationRebuild] != ""
+	platformsChanged := false
 	if len(mine) > 0 {
 		last := &mine[0]
 		if !last.Status.Phase.Terminal() {
@@ -174,12 +183,15 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 				si.Status.Gap = ""
 			}
 		}
-		if last.Status.Phase == v1alpha1.BuildPromoted && last.Status.Promoted != nil &&
+		// The source's platforms changed since the last build (the cluster now requires another platform, say):
+		// build now rather than waiting for the rescan interval.
+		platformsChanged = !slices.Equal(platformNames(last.Spec.Platforms), platformNames(si.Spec.Platforms))
+		if !platformsChanged && last.Status.Phase == v1alpha1.BuildPromoted && last.Status.Promoted != nil &&
 			(si.Status.Current == nil || si.Status.Current.Digest != last.Status.Promoted.Digest) {
 			// Wait for the catalog to verify the promoted patch before deciding anything else.
 			return false, nil
 		}
-		if !rebuild && time.Since(last.CreationTimestamp.Time) < r.Config.RescanInterval {
+		if !rebuild && !platformsChanged && time.Since(last.CreationTimestamp.Time) < r.Config.RescanInterval {
 			return false, nil
 		}
 	}
@@ -188,9 +200,14 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 	}
 
 	reason := "NewSource"
+	baseline := si.Status.Current
 	switch {
+	case si.Annotations[AnnotationRebuild] == "force":
+		reason, baseline = "Forced", nil
 	case rebuild:
 		reason = "Manual"
+	case platformsChanged:
+		reason = "PlatformsChanged"
 	case len(mine) > 0:
 		reason = "Rescan"
 	}
@@ -206,7 +223,7 @@ func (r *SourceImageReconciler) schedule(ctx context.Context, si *v1alpha1.Sourc
 			SourceDigest: si.Spec.Digest,
 			Reference:    si.Status.References[0],
 			Platforms:    si.Spec.Platforms,
-			Baseline:     si.Status.Current,
+			Baseline:     baseline,
 			Reason:       reason,
 			ScanOnly:     r.Config.Mode == ModeReportOnly,
 		},
@@ -310,4 +327,22 @@ func (r *SourceImageReconciler) ensureRollouts(ctx context.Context, si *v1alpha1
 		}
 	}
 	return nil
+}
+
+func platformNames(ps []v1alpha1.PlatformDigest) []string {
+	out := make([]string, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, p.Platform)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func coversPlatforms(ref *v1alpha1.PatchRef, want []v1alpha1.PlatformDigest) bool {
+	for _, w := range want {
+		if !slices.ContainsFunc(ref.Platforms, func(p v1alpha1.PlatformPatch) bool { return p.Platform == w.Platform }) {
+			return false
+		}
+	}
+	return true
 }

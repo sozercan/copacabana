@@ -16,15 +16,6 @@ kind: ServiceAccount
 metadata: {name: copa-verify, namespace: copa-verifier}
 automountServiceAccountToken: false
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata: {name: buildkitd-config, namespace: copa-builder}
-data:
-  buildkitd.toml: |
-    [registry."kind-registry:5000"]
-      http = true
-      insecure = true
----
 # Trivy runs as a server so the vulnerability database is downloaded once, not by every Job.
 apiVersion: apps/v1
 kind: Deployment
@@ -74,7 +65,9 @@ spec:
     ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
   - to: [{podSelector: {matchLabels: {app: trivy-server}}}]
     ports: [{port: 4954}]
-  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12]}}]
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-registry}}, podSelector: {matchLabels: {app: registry}}}]
+    ports: [{port: 5000}]
+  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12, NODE_CIDRS]}}]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -99,4 +92,6 @@ spec:
     ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
   - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-builder}}, podSelector: {matchLabels: {app: trivy-server}}}]
     ports: [{port: 4954}]
-  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12]}}]
+  - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: copa-registry}}, podSelector: {matchLabels: {app: registry}}}]
+    ports: [{port: 5000}]
+  - to: [{ipBlock: {cidr: 0.0.0.0/0, except: [10.244.0.0/16, 10.96.0.0/12, NODE_CIDRS]}}]

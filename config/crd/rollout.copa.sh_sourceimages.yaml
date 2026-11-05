@@ -230,6 +230,10 @@ spec:
                   description: WorkloadRef points at a workload that uses a source
                     image.
                   properties:
+                    kind:
+                      description: Kind is Deployment, StatefulSet, DaemonSet or CronJob.
+                        Empty means Deployment.
+                      type: string
                     name:
                       type: string
                     namespace:

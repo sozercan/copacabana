@@ -152,10 +152,11 @@ func (c *Client) Resolve(ctx context.Context, ref string, want []string) (*Resol
 	return out, nil
 }
 
-// PlatformString formats a platform as os/arch[/variant].
+// PlatformString formats a platform as os/arch[/variant]. Default variants are dropped the way containerd
+// normalizes them, so an index entry for arm64/v8 matches a configured linux/arm64.
 func PlatformString(p *v1.Platform) string {
 	s := p.OS + "/" + p.Architecture
-	if p.Variant != "" {
+	if p.Variant != "" && !(p.Architecture == "arm64" && p.Variant == "v8") {
 		s += "/" + p.Variant
 	}
 	return s

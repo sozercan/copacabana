@@ -44,6 +44,9 @@ type Config struct {
 	RescanInterval      time.Duration
 	MaxConcurrentBuilds int
 	BuildTimeout        time.Duration
+	// AllowEmulation builds platforms the cluster has no nodes for under qemu on the builder pool, instead of
+	// pinning each build to a node of the target architecture. Builds are slower and need binfmt on the nodes.
+	AllowEmulation bool
 
 	RolloutDeadline       time.Duration
 	HealthyFor            time.Duration

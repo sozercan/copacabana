@@ -49,6 +49,8 @@ func (r *PatchBuildReconciler) SetupWithManager(mgr ctrl.Manager) error {
 type jobOutcome struct {
 	done, failed bool
 	message      string
+	// waiting explains why a running Job isn't making progress, such as a pod that can't be scheduled.
+	waiting string
 }
 
 // Reconcile advances one PatchBuild.
@@ -127,6 +129,9 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 				p.BaselineFixable = ptr.To(sr.Fixable)
 			default:
 				done = false
+				if out.waiting != "" {
+					pb.Status.Message = out.waiting
+				}
 			}
 		}
 		if !done {
@@ -169,6 +174,9 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 				p.Fixable = ptr.To(sr.Fixable)
 			default:
 				done = false
+				if out.waiting != "" {
+					pb.Status.Message = out.waiting
+				}
 			}
 		}
 		if !done {
@@ -216,6 +224,9 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 				p.VEXRef = br.VEXRef
 			default:
 				done = false
+				if out.waiting != "" {
+					pb.Status.Message = out.waiting
+				}
 			}
 		}
 		if !done {
@@ -260,6 +271,9 @@ func (r *PatchBuildReconciler) step(ctx context.Context, pb *v1alpha1.PatchBuild
 			pb.Status.Phase = v1alpha1.BuildPromoted
 			pb.Status.Message = "promoted " + vr.Tag
 			return ctrl.Result{}, nil
+		}
+		if out.waiting != "" {
+			pb.Status.Message = out.waiting
 		}
 		return wait, nil
 	}
@@ -320,6 +334,23 @@ func baselineNeedsBuild(pb *v1alpha1.PatchBuild) bool {
 }
 
 // runJob creates the Job if it doesn't exist and reports its outcome, reading the worker's termination message.
+// unschedulable reports a Job pod the scheduler can't place, so a missing builder node shows up in the status
+// instead of looking like a slow scan until the Job deadline.
+func (r *PatchBuildReconciler) unschedulable(ctx context.Context, job *batchv1.Job) string {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(job.Namespace), client.MatchingLabels{"batch.kubernetes.io/job-name": job.Name}); err != nil {
+		return ""
+	}
+	for _, p := range pods.Items {
+		for _, c := range p.Status.Conditions {
+			if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Reason == corev1.PodReasonUnschedulable {
+				return fmt.Sprintf("waiting: %s pod can't be scheduled: %s", job.Labels["copa.sh/stage"], c.Message)
+			}
+		}
+	}
+	return ""
+}
+
 func (r *PatchBuildReconciler) runJob(ctx context.Context, job *batchv1.Job) (jobOutcome, error) {
 	var existing batchv1.Job
 	err := r.Get(ctx, client.ObjectKeyFromObject(job), &existing)
@@ -345,7 +376,7 @@ func (r *PatchBuildReconciler) runJob(ctx context.Context, job *batchv1.Job) (jo
 		}
 	}
 	if !complete && !failed {
-		return jobOutcome{}, nil
+		return jobOutcome{waiting: r.unschedulable(ctx, &existing)}, nil
 	}
 	msg, err := r.terminationMessage(ctx, &existing)
 	if err != nil {

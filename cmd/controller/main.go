@@ -31,6 +31,7 @@ func main() {
 		pubKeyPath string
 		metrics    string
 		probes     string
+		leader     bool
 	)
 	flag.StringVar(&cfg.Mode, "mode", controller.ModeBuilder, "report-only, builder, or consumer")
 	flag.StringVar(&platforms, "platforms", "linux/amd64", "comma-separated platforms every patch must cover")
@@ -53,9 +54,11 @@ func main() {
 	flag.DurationVar(&cfg.Soak, "soak", 24*time.Hour, "how long patched workloads must run healthy before the patch is known-good")
 	flag.IntVar(&cfg.MaxConcurrentRestarts, "max-concurrent-restarts", 3, "Deployments restarting at once across the cluster")
 	flag.BoolVar(&cfg.RequireSafeStrategy, "require-safe-strategy", true, "skip Deployments without maxUnavailable 0, surge, and readiness probes")
+	flag.BoolVar(&cfg.AllowEmulation, "allow-emulation", false, "build platforms without matching nodes under qemu on the builder pool")
 	flag.BoolVar(&cfg.AllowNewVulnerabilities, "allow-new-vulnerabilities", false, "let verification pass when patching adds vulnerabilities")
 	flag.StringVar(&metrics, "metrics-bind-address", ":8080", "metrics address")
 	flag.StringVar(&probes, "health-probe-bind-address", ":8081", "health probe address")
+	flag.BoolVar(&leader, "leader-elect", true, "elect a leader so only one replica reconciles at a time")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -88,6 +91,10 @@ func main() {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metrics},
 		HealthProbeBindAddress: probes,
+		LeaderElection:         leader,
+		LeaderElectionID:       "copa-rollout-controller.copa.sh",
+		// A crashed leader's lease is released on shutdown so a standby takes over within seconds.
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		log.Error(err, "creating manager")
